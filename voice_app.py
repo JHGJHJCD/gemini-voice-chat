@@ -468,9 +468,12 @@ class VoiceApp(QMainWindow):
         self.screen_btn.clicked.connect(lambda: self._toggle_video("screen"))
         self.cam_btn = self._toggle_button("📷  מצלמה", "שיתוף מצלמה עם Gemini")
         self.cam_btn.clicked.connect(lambda: self._toggle_video("camera"))
+        self.record_btn = self._toggle_button("⏺  הקלט", "הקלטת השיחה לקובץ אודיו")
+        self.record_btn.clicked.connect(self._toggle_recording)
         media_bar.addWidget(self.mute_btn)
         media_bar.addWidget(self.screen_btn)
         media_bar.addWidget(self.cam_btn)
+        media_bar.addWidget(self.record_btn)
         root.addLayout(media_bar)
 
         # בורר מקור וידאו (מוסתר עד שמפעילים מסך/מצלמה)
@@ -635,6 +638,11 @@ class VoiceApp(QMainWindow):
 
     def _stop_conversation(self):
         self._stop_video()
+        # אם מקליטים - שומרים את ההקלטה לפני הסגירה
+        if self.record_btn.isChecked():
+            self._save_recording()
+            self.record_btn.setChecked(False)
+            self.record_btn.setText("⏺  הקלט")
         if self.mute_btn.isChecked():
             self.mute_btn.setChecked(False)
             self.mute_btn.setText("🎤  מיקרופון")
@@ -647,8 +655,41 @@ class VoiceApp(QMainWindow):
 
     def _update_media_enabled(self, enabled: bool):
         """מאפשר/חוסם את כפתורי המדיה לפי האם שיחה פעילה."""
-        for btn in (self.mute_btn, self.screen_btn, self.cam_btn):
+        for btn in (self.mute_btn, self.screen_btn, self.cam_btn, self.record_btn):
             btn.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # הקלטה
+    # ------------------------------------------------------------------ #
+    def _toggle_recording(self):
+        if not self.engine:
+            self.record_btn.setChecked(False)
+            return
+        if self.record_btn.isChecked():
+            self.engine.start_recording()
+            self.record_btn.setText("⏹  עצור הקלטה")
+            self.status_label.setText("● מקליט…")
+        else:
+            self._save_recording()
+            self.record_btn.setText("⏺  הקלט")
+
+    def _save_recording(self):
+        """שומר את ההקלטה לקובץ WAV ומציג היכן נשמרה."""
+        if not self.engine:
+            return
+        from PyQt6.QtCore import QDateTime
+        stamp = QDateTime.currentDateTime().toString("yyyy-MM-dd_HHmm")
+        # תיקיית הקלטות ליד האפליקציה
+        rec_dir = os.path.join(config.app_dir(), "הקלטות")
+        try:
+            os.makedirs(rec_dir, exist_ok=True)
+        except Exception:
+            rec_dir = config.app_dir()
+        path = os.path.join(rec_dir, f"שיחה_{stamp}.wav")
+        if self.engine.stop_recording(path):
+            self.status_label.setText("✓ ההקלטה נשמרה בתיקיית 'הקלטות'")
+        else:
+            self.status_label.setText("ההקלטה ריקה — לא נשמרה")
 
     # ------------------------------------------------------------------ #
     # השתקה

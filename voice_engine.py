@@ -27,7 +27,9 @@ voice_engine.py
 import asyncio
 import queue
 import threading
+import time
 import traceback
+import wave
 from typing import Callable, Optional
 
 # מעקף נטפרי - חייב לפני ייבוא google-genai וכל חיבור רשת
@@ -126,6 +128,12 @@ class VoiceEngine:
         # נכתב מ-thread ה-UI, נקרא מ-thread ה-asyncio - גישה אטומית ב-Python.
         self._video_frame: bytes | None = None
 
+        # הקלטת השיחה - מיקס של המיקרופון ושל Gemini לציר זמן משותף
+        self.recording = False
+        self._rec_lock = threading.Lock()
+        self._rec_samples = np.zeros(0, dtype=np.int32)  # מצבר 24kHz מונו
+        self._rec_start = 0.0
+
     # ================================================================== #
     # API ציבורי
     # ================================================================== #
@@ -164,6 +172,77 @@ class VoiceEngine:
         נקרא מ-thread ה-UI. None = הפסקת שליחת וידאו.
         """
         self._video_frame = jpeg
+
+    # ================================================================== #
+    # הקלטת השיחה
+    # ================================================================== #
+    def start_recording(self):
+        """מתחיל להקליט את השיחה (מיקרופון + Gemini) למיקס אחד."""
+        with self._rec_lock:
+            self._rec_samples = np.zeros(0, dtype=np.int32)
+            self._rec_start = time.monotonic()
+            self.recording = True
+
+    def stop_recording(self, path: str) -> bool:
+        """
+        עוצר הקלטה ושומר לקובץ WAV (24kHz מונו).
+        מחזיר True אם נשמר בהצלחה.
+        """
+        with self._rec_lock:
+            self.recording = False
+            samples = self._rec_samples
+            self._rec_samples = np.zeros(0, dtype=np.int32)
+
+        if len(samples) == 0:
+            return False
+
+        # חיתוך לטווח int16 (מניעת עיוות מהמיקס)
+        clipped = np.clip(samples, -32768, 32767).astype(np.int16)
+        try:
+            with wave.open(path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)        # 16-bit
+                wf.setframerate(RECV_RATE)
+                wf.writeframes(clipped.tobytes())
+            return True
+        except Exception:
+            return False
+
+    def _mix_into_recording(self, pcm_bytes: bytes, rate: int):
+        """
+        מערבב חתיכת אודיו לתוך ההקלטה בציר זמן משותף (לפי שעון).
+        מיקרופון (16kHz) עובר דגימה-מחדש ל-24kHz. הכל מתווסף (מיקס).
+        """
+        if not self.recording:
+            return
+        arr = np.frombuffer(pcm_bytes, dtype=np.int16)
+        if rate != RECV_RATE:
+            # דגימה-מחדש לינארית ל-24kHz
+            n_dst = int(len(arr) * RECV_RATE / rate)
+            if n_dst <= 0:
+                return
+            arr = np.interp(
+                np.linspace(0, len(arr), n_dst, endpoint=False),
+                np.arange(len(arr)), arr,
+            )
+        arr = arr.astype(np.int32)
+
+        with self._rec_lock:
+            if not self.recording:
+                return
+            # מיקום הכתיבה לפי הזמן שחלף מתחילת ההקלטה
+            pos = int((time.monotonic() - self._rec_start) * RECV_RATE)
+            if pos < 0:
+                pos = 0
+            end = pos + len(arr)
+            if end > len(self._rec_samples):
+                # הארכת המצבר בשקט
+                self._rec_samples = np.concatenate([
+                    self._rec_samples,
+                    np.zeros(end - len(self._rec_samples), dtype=np.int32),
+                ])
+            # מיקס (חיבור) - כך שדיבור בו-זמני לא דורס
+            self._rec_samples[pos:end] += arr
 
     # ================================================================== #
     # לולאת asyncio (רצה ב-thread הנפרד)
@@ -357,6 +436,10 @@ class VoiceEngine:
             if self.mic_muted:
                 continue
 
+            # הקלטה - קול המשתמש (16kHz)
+            if self.recording:
+                self._mix_into_recording(data, SEND_RATE)
+
             try:
                 await session.send_realtime_input(
                     audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
@@ -397,6 +480,9 @@ class VoiceEngine:
                 if response.data is not None:
                     self.on_status("speaking")
                     self._play_queue.put(response.data)
+                    # הקלטה - קול Gemini (24kHz)
+                    if self.recording:
+                        self._mix_into_recording(response.data, RECV_RATE)
 
                 sc = response.server_content
                 if sc is None:
