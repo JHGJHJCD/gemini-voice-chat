@@ -822,7 +822,7 @@ def _lighten(hex_color: str, factor: float = 1.18) -> str:
 # ---------------------------------------------------------------------- #
 # אשף הגדרת מפתח - מוצג בהפעלה ראשונה כשאין מפתח
 # ---------------------------------------------------------------------- #
-KEY_FILE = os.path.join(os.path.dirname(__file__), "api_key.txt")
+KEY_FILE = os.path.join(config.app_dir(), "api_key.txt")
 
 
 class ApiKeyDialog(QDialog):

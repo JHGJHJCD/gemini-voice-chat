@@ -10,9 +10,23 @@ config.py
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 
 import sounddevice as sd
+
+
+# ---------------------------------------------------------------------- #
+# תיקיית הבסיס - חשוב לעבודה תקינה גם כקובץ .exe (PyInstaller)
+# ---------------------------------------------------------------------- #
+def app_dir() -> str:
+    """
+    מחזיר את התיקייה שבה נמצאים קבצי המשתמש (api_key.txt, settings.json).
+    כ-.exe: התיקייה של הקובץ עצמו. כקוד רגיל: תיקיית הסקריפט.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------------------------------------------------------------- #
@@ -184,7 +198,7 @@ def list_output_devices() -> list[AudioDevice]:
 # ---------------------------------------------------------------------- #
 # שמירה/טעינה של הגדרות המשתמש
 # ---------------------------------------------------------------------- #
-SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
+SETTINGS_FILE = os.path.join(app_dir(), "settings.json")
 
 
 @dataclass
