@@ -58,6 +58,14 @@ SYSTEM_INSTRUCTION = (
     "אל תשתמש בסימני פיסוק מיוחדים או אימוג'ים בתשובות."
 )
 
+# מספר ניסיונות חיבור-מחדש אוטומטיים לפני ויתור
+MAX_RECONNECT = 5
+
+
+class _FatalError(Exception):
+    """שגיאה שאין טעם לנסות אחריה שוב (מפתח שגוי, SSL)."""
+    pass
+
 
 class VoiceEngine:
     """
@@ -102,6 +110,7 @@ class VoiceEngine:
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._tasks: list[asyncio.Task] = []
+        self._reconnect_attempts = 0
 
         # תורים בטוחי-thread בין callbacks של sounddevice ל-asyncio
         self._mic_queue: "queue.Queue[bytes]" = queue.Queue()
@@ -164,7 +173,7 @@ class VoiceEngine:
         try:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._session_main())
+            self._loop.run_until_complete(self._main_with_reconnect())
         except Exception as e:
             self.on_error(f"שגיאה במנוע הקולי: {e}")
             traceback.print_exc()
@@ -172,6 +181,36 @@ class VoiceEngine:
             self._cleanup_audio()
             self._running = False
             self.on_status("stopped")
+
+    async def _main_with_reconnect(self):
+        """
+        מריץ את השיחה ומתחבר מחדש אוטומטית אם החיבור נופל באמצע.
+        שגיאות "קטלניות" (מפתח שגוי, SSL) לא מנסות מחדש - אין טעם.
+        """
+        self._reconnect_attempts = 0
+        while self._running:
+            try:
+                await self._session_main()
+                return  # יציאה נקייה (המשתמש עצר)
+            except asyncio.CancelledError:
+                return
+            except _FatalError as e:
+                self.on_error(str(e))
+                return
+            except Exception:
+                # שגיאה זמנית (חיבור נפל) - מנסים להתחבר מחדש
+                self._cleanup_audio()
+                if not self._running:
+                    return
+                self._reconnect_attempts += 1
+                if self._reconnect_attempts > MAX_RECONNECT:
+                    self.on_error(
+                        "החיבור נכשל שוב ושוב. נסה להתחיל שיחה מחדש."
+                    )
+                    return
+                self.on_status("reconnecting")
+                # השהיה הולכת וגדלה בין ניסיונות (backoff)
+                await asyncio.sleep(min(2 * self._reconnect_attempts, 8))
 
     async def _session_main(self):
         """מנהל את החיבור ל-Gemini ואת כל המשימות המקבילות."""
@@ -199,6 +238,8 @@ class VoiceEngine:
                 self._session = session
                 self._open_audio_streams()
                 self.on_status("listening")
+                # חיבור יציב - מאפסים את מונה הניסיונות
+                self._reconnect_attempts = 0
 
                 # משימות מקבילות: מיקרופון + וידאו + קבלת אודיו.
                 # שומרים אותן כדי שאפשר יהיה לבטל בצורה מסודרת ב-stop().
@@ -212,15 +253,16 @@ class VoiceEngine:
                 except asyncio.CancelledError:
                     pass  # כיבוי יזום - תקין
         except asyncio.CancelledError:
-            pass
+            pass  # כיבוי יזום - יציאה נקייה
         except Exception as e:
             err = str(e)
+            # שגיאות קטלניות - אין טעם לנסות מחדש
             if "SSL" in err or "certificate" in err.lower():
-                self.on_error("בעיית אבטחה (SSL). בדוק את הגדרות נטפרי.")
-            elif "API key" in err or "403" in err or "401" in err:
-                self.on_error("מפתח API לא תקין.")
-            else:
-                self.on_error(f"שגיאת חיבור: {err[:150]}")
+                raise _FatalError("בעיית אבטחה (SSL). בדוק את הגדרות נטפרי.")
+            if ("API key" in err or "API_KEY_INVALID" in err
+                    or "403" in err or "401" in err):
+                raise _FatalError("מפתח API לא תקין.")
+            # שאר השגיאות (חיבור נפל) - נזרקות כדי שהעטיפה תתחבר מחדש
             raise
 
     # ------------------------------------------------------------------ #

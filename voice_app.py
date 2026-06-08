@@ -28,7 +28,7 @@ from PyQt6.QtGui import QFont, QPixmap, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
-    QComboBox, QFormLayout, QDialogButtonBox, QFrame,
+    QComboBox, QFormLayout, QDialogButtonBox, QFrame, QFileDialog, QLineEdit,
 )
 
 from qt_material import apply_stylesheet
@@ -82,11 +82,12 @@ class EngineSignals(QObject):
 
 
 STATUS_DISPLAY = {
-    "connecting": ("מתחבר…",            Palette.WARNING),
-    "listening":  ("מאזין — דבר עכשיו", Palette.SUCCESS),
-    "speaking":   ("Gemini מדבר…",      Palette.ACCENT),
-    "stopped":    ("השיחה הסתיימה",     Palette.TEXT_MUTED),
-    "idle":       ("מוכן להתחיל",       Palette.TEXT_MUTED),
+    "connecting":   ("מתחבר…",            Palette.WARNING),
+    "reconnecting": ("מתחבר מחדש…",       Palette.WARNING),
+    "listening":    ("מאזין — דבר עכשיו", Palette.SUCCESS),
+    "speaking":     ("Gemini מדבר…",      Palette.ACCENT),
+    "stopped":      ("השיחה הסתיימה",     Palette.TEXT_MUTED),
+    "idle":         ("מוכן להתחיל",       Palette.TEXT_MUTED),
 }
 
 
@@ -357,6 +358,8 @@ class VoiceApp(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         self.persona_btn = self._icon_button("👤", "הנחיית מערכת — אישיות ותפקיד")
         self.persona_btn.clicked.connect(self.open_instruction)
+        self.save_btn = self._icon_button("💾", "שמירת תמליל השיחה לקובץ")
+        self.save_btn.clicked.connect(self.save_transcript)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
@@ -375,13 +378,14 @@ class VoiceApp(QMainWindow):
         left_btns.setSpacing(8)
         left_btns.addWidget(self.settings_btn)
         left_btns.addWidget(self.persona_btn)
+        left_btns.addWidget(self.save_btn)
         left_wrap = QWidget()
         left_wrap.setLayout(left_btns)
 
         title_row.addWidget(left_wrap)
         title_row.addLayout(title_box, stretch=1)
         spacer = QWidget()
-        spacer.setFixedSize(100, 46)
+        spacer.setFixedSize(154, 46)   # תואם לרוחב 3 הכפתורים משמאל
         title_row.addWidget(spacer)
         root.addLayout(title_row)
 
@@ -548,6 +552,36 @@ class VoiceApp(QMainWindow):
         if InstructionDialog(self.settings, self).exec():
             if self.engine and self.engine.is_running():
                 self.status_label.setText("ההנחיה החדשה תחול בשיחה הבאה")
+
+    def save_transcript(self):
+        """שומר את תמליל השיחה לקובץ טקסט."""
+        if not self._turns:
+            QMessageBox.information(self, "אין מה לשמור",
+                                    "עדיין אין שיחה לשמירה.")
+            return
+
+        # שם ברירת מחדל עם תאריך (Qt מספק את הזמן - לא תלוי ב-datetime)
+        from PyQt6.QtCore import QDateTime
+        stamp = QDateTime.currentDateTime().toString("yyyy-MM-dd_HHmm")
+        default = f"שיחה_{stamp}.txt"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תמליל", default, "קובץ טקסט (*.txt)"
+        )
+        if not path:
+            return
+
+        labels = {"user": "אתה", "bot": "Gemini", "error": "שגיאה"}
+        lines = [f"שיחה קולית עם Gemini — {stamp}", "=" * 40, ""]
+        for speaker, text in self._turns:
+            lines.append(f"{labels.get(speaker, speaker)}: {text}")
+            lines.append("")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self.status_label.setText("✓ התמליל נשמר")
+        except Exception as e:
+            QMessageBox.warning(self, "שגיאה בשמירה", str(e))
 
     # ------------------------------------------------------------------ #
     # שליטה בשיחה
@@ -786,14 +820,101 @@ def _lighten(hex_color: str, factor: float = 1.18) -> str:
 
 
 # ---------------------------------------------------------------------- #
+# אשף הגדרת מפתח - מוצג בהפעלה ראשונה כשאין מפתח
+# ---------------------------------------------------------------------- #
+KEY_FILE = os.path.join(os.path.dirname(__file__), "api_key.txt")
+
+
+class ApiKeyDialog(QDialog):
+    """דיאלוג הדבקת מפתח API בהפעלה ראשונה."""
+
+    def __init__(self):
+        super().__init__()
+        self.api_key = ""
+        self.setWindowTitle("הגדרת מפתח API")
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setMinimumWidth(480)
+        self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(26, 26, 26, 26)
+        layout.setSpacing(14)
+
+        heading = QLabel("ברוך הבא! 🎙️")
+        heading.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        heading.setStyleSheet(f"color: {Palette.TEXT};")
+        layout.addWidget(heading)
+
+        desc = QLabel(
+            "כדי להתחיל, צריך מפתח API חינמי של Gemini.\n"
+            "1. היכנס לאתר Google AI Studio\n"
+            "2. צור מפתח (Create API Key)\n"
+            "3. העתק והדבק אותו כאן:"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {Palette.TEXT}; font-size: 13px;")
+        layout.addWidget(desc)
+
+        link = QLabel(
+            '<a href="https://aistudio.google.com/app/apikey" '
+            f'style="color:{Palette.ACCENT};">לחץ כאן לקבלת מפתח →</a>'
+        )
+        link.setOpenExternalLinks(True)
+        link.setStyleSheet("font-size: 13px;")
+        layout.addWidget(link)
+
+        self.field = QLineEdit()
+        self.field.setPlaceholderText("הדבק כאן את המפתח (מתחיל ב-AIza...)")
+        self.field.setStyleSheet(f"""
+            QLineEdit {{ background: {Palette.CARD}; color: {Palette.TEXT};
+                         border: 1px solid {Palette.CARD_BORDER};
+                         border-radius: 8px; padding: 10px; font-size: 13px; }}
+            QLineEdit:focus {{ border-color: {Palette.ACCENT}; }}
+        """)
+        self.field.returnPressed.connect(self._accept)
+        layout.addWidget(self.field)
+
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet(f"color: {Palette.DANGER}; font-size: 12px;")
+        layout.addWidget(self.error_label)
+
+        btn = QPushButton("התחל")
+        btn.setMinimumHeight(46)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            f"background: {Palette.ACCENT}; color: #00282e; font-weight: bold; "
+            f"font-size: 15px; border: none; border-radius: 10px;"
+        )
+        btn.clicked.connect(self._accept)
+        layout.addWidget(btn)
+
+    def _accept(self):
+        key = self.field.text().strip()
+        if len(key) < 20:
+            self.error_label.setText("המפתח נראה קצר מדי. בדוק שהעתקת אותו במלואו.")
+            return
+        # שמירה לקובץ כדי שלא יצטרכו להזין שוב
+        try:
+            with open(KEY_FILE, "w", encoding="utf-8") as f:
+                f.write(key)
+        except Exception:
+            pass  # גם אם השמירה נכשלה, נמשיך עם המפתח בזיכרון
+        self.api_key = key
+        self.accept()
+
+
 def get_api_key() -> str:
     key = os.getenv("GEMINI_API_KEY")
     if key:
         return key
-    key_file = os.path.join(os.path.dirname(__file__), "api_key.txt")
-    if os.path.exists(key_file):
-        with open(key_file, encoding="utf-8") as f:
-            return f.read().strip()
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, encoding="utf-8") as f:
+            content = f.read().strip()
+            # מתעלמים מקובץ הדוגמה / ריק
+            if content and "הדבק" not in content:
+                return content
     return ""
 
 
@@ -810,13 +931,11 @@ def main():
 
     api_key = get_api_key()
     if not api_key:
-        QMessageBox.critical(
-            None, "חסר מפתח API",
-            "לא נמצא GEMINI_API_KEY.\n\n"
-            "הגדר משתנה סביבה GEMINI_API_KEY,\n"
-            "או צור קובץ api_key.txt עם המפתח.",
-        )
-        sys.exit(1)
+        # אשף הגדרת מפתח בהפעלה ראשונה
+        dialog = ApiKeyDialog()
+        if not dialog.exec():
+            sys.exit(0)   # המשתמש סגר בלי להזין מפתח
+        api_key = dialog.api_key
 
     window = VoiceApp(api_key=api_key)
     window.show()
