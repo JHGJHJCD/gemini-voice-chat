@@ -24,8 +24,11 @@ import os
 import sys
 import math
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QFont, QPixmap, QShortcut, QKeySequence, QIcon
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QPointF, QRectF
+from PyQt6.QtGui import (
+    QFont, QPixmap, QShortcut, QKeySequence, QIcon,
+    QPainter, QColor, QRadialGradient, QPen,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
@@ -80,6 +83,7 @@ class EngineSignals(QObject):
     user_text = pyqtSignal(str)
     bot_text = pyqtSignal(str)
     error = pyqtSignal(str)
+    level = pyqtSignal(float)
 
 
 STATUS_DISPLAY = {
@@ -307,6 +311,132 @@ class SettingsDialog(QDialog):
 
 
 # ====================================================================== #
+# כדור קולי מונפש - הלב של העיצוב. מגיב לעוצמת הקול ולמצב.
+# ====================================================================== #
+class VoiceOrb(QWidget):
+    """
+    כדור מרכזי שמצויר ב-QPainter ומונפש:
+    - טבעות פועמות שמתרחבות החוצה כשמאזין/מדבר
+    - הילת זוהר שגדלה עם עוצמת הקול
+    - צבע משתנה לפי מצב (סגול=מוכן, כתום=מתחבר, ירוק=מאזין, ציאן=מדבר)
+    - לחיצה = התחל/עצור שיחה
+    """
+    clicked = pyqtSignal()
+
+    STATE_COLORS = {
+        "idle":         "#5a6b72",
+        "connecting":   "#ffa726",
+        "reconnecting": "#ffa726",
+        "listening":    "#4cd07d",
+        "speaking":     None,   # ישתמש בצבע ההדגשה
+    }
+
+    def __init__(self, accent: str, parent=None):
+        super().__init__(parent)
+        self.accent = accent
+        self.state = "idle"
+        self._level = 0.0           # יעד עוצמת קול (0..1)
+        self._display = 0.0         # ערך מוחלק לתצוגה חלקה
+        self._phase = 0.0
+        self.setMinimumSize(240, 240)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)   # ~30fps
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def set_state(self, state: str):
+        self.state = state
+
+    def set_level(self, lvl: float):
+        # שומרים את המקסימום בין הפריימים כדי לתפוס פסגות
+        self._level = max(self._level, min(lvl, 1.0))
+
+    def _color(self) -> QColor:
+        c = self.STATE_COLORS.get(self.state)
+        return QColor(c if c else self.accent)
+
+    def _tick(self):
+        self._phase += 0.05
+        # החלקה: מתקרבים ליעד ואז דועכים
+        self._display += (self._level - self._display) * 0.3
+        self._level *= 0.8
+        self.update()
+
+    def mousePressEvent(self, e):
+        self.clicked.emit()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        active = self.state in ("listening", "speaking", "connecting", "reconnecting")
+        base_r = min(w, h) * 0.24
+        col = self._color()
+        lvl = self._display
+
+        # --- טבעות פועמות מתרחבות (כשפעיל) ---
+        if active:
+            for i in range(3):
+                frac = ((self._phase + i * 0.66) % 2.0) / 2.0
+                rr = base_r * (1.0 + frac * 1.7)
+                a = int(85 * (1.0 - frac) * (0.45 + 0.55 * lvl))
+                if a > 0:
+                    pen = QPen(QColor(col.red(), col.green(), col.blue(), a))
+                    pen.setWidthF(2.0)
+                    p.setPen(pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(QPointF(cx, cy), rr, rr)
+
+        # --- הילת זוהר (גדלה עם עוצמת הקול) ---
+        glow_r = base_r * (1.45 + 0.9 * lvl)
+        g = QRadialGradient(cx, cy, glow_r)
+        g.setColorAt(0, QColor(col.red(), col.green(), col.blue(), int(60 + 130 * lvl)))
+        g.setColorAt(1, QColor(col.red(), col.green(), col.blue(), 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QPointF(cx, cy), glow_r, glow_r)
+
+        # --- הכדור עצמו (גרדיאנט רדיאלי תלת-ממדי) ---
+        orb_r = base_r * (1.0 + 0.13 * lvl)
+        og = QRadialGradient(cx - orb_r * 0.32, cy - orb_r * 0.32, orb_r * 1.7)
+        og.setColorAt(0.0, col.lighter(155))
+        og.setColorAt(0.55, col)
+        og.setColorAt(1.0, col.darker(165))
+        p.setBrush(og)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), orb_r, orb_r)
+
+        # --- אייקון מיקרופון במרכז ---
+        self._draw_mic(p, cx, cy, orb_r * 0.95)
+
+    def _draw_mic(self, p: QPainter, cx: float, cy: float, size: float):
+        white = QColor(255, 255, 255, 240)
+        # קפסולה
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(white)
+        cap_w = size * 0.34
+        cap_h = size * 0.60
+        rect = QRectF(cx - cap_w / 2, cy - cap_h * 0.75, cap_w, cap_h)
+        p.drawRoundedRect(rect, cap_w / 2, cap_w / 2)
+        # קשת + רגל
+        pen = QPen(white)
+        pen.setWidthF(size * 0.065)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        arc_r = size * 0.46
+        ar = QRectF(cx - arc_r, cy - arc_r * 0.78, arc_r * 2, arc_r * 1.5)
+        p.drawArc(ar, 200 * 16, 140 * 16)
+        p.drawLine(QPointF(cx, cy + arc_r * 0.72), QPointF(cx, cy + arc_r * 1.05))
+        # בסיס
+        bw = size * 0.28
+        p.drawLine(QPointF(cx - bw / 2, cy + arc_r * 1.05),
+                   QPointF(cx + bw / 2, cy + arc_r * 1.05))
+
+
+# ====================================================================== #
 # החלון הראשי
 # ====================================================================== #
 class VoiceApp(QMainWindow):
@@ -329,6 +459,7 @@ class VoiceApp(QMainWindow):
         self.signals.user_text.connect(self._on_user_text)
         self.signals.bot_text.connect(self._on_bot_text)
         self.signals.error.connect(self._on_error)
+        self.signals.level.connect(self._on_level)
 
         self._turns: list[list[str]] = []
 
@@ -360,7 +491,14 @@ class VoiceApp(QMainWindow):
     # ------------------------------------------------------------------ #
     def _build_ui(self):
         central = QWidget()
-        central.setStyleSheet(f"background: {Palette.BG};")
+        # רקע גרדיאנט עדין - תחושה פרימיום
+        central.setObjectName("central")
+        central.setStyleSheet(f"""
+            QWidget#central {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #16222a, stop:0.5 {Palette.BG}, stop:1 #0a0e10);
+            }}
+        """)
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(26, 22, 26, 24)
@@ -404,11 +542,13 @@ class VoiceApp(QMainWindow):
         left_btns.addWidget(self.save_btn)
         left_wrap = QWidget()
         left_wrap.setLayout(left_btns)
+        left_wrap.setStyleSheet("background: transparent;")
 
         title_row.addWidget(left_wrap)
         title_row.addLayout(title_box, stretch=1)
         spacer = QWidget()
         spacer.setFixedSize(154, 46)   # תואם לרוחב 3 הכפתורים משמאל
+        spacer.setStyleSheet("background: transparent;")
         title_row.addWidget(spacer)
         root.addLayout(title_row)
 
@@ -490,19 +630,24 @@ class VoiceApp(QMainWindow):
         self.source_combo.hide()
         root.addWidget(self.source_combo)
 
-        # ====== הכפתור הראשי ======
-        self.main_btn = QPushButton()
-        self.main_btn.setFont(QFont("Segoe UI", 17, QFont.Weight.Bold))
-        self.main_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.main_btn.setMinimumHeight(62)
-        # לא ממוקד - כדי שמקש רווח לא יפעיל אותו פעמיים (יש קיצור נפרד)
-        self.main_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._style_start_button()
-        self.main_btn.clicked.connect(self.toggle_conversation)
-        root.addWidget(self.main_btn)
+        # ====== הכדור הקולי (הלב של הממשק) ======
+        self.orb = VoiceOrb(Palette.ACCENT)
+        self.orb.clicked.connect(self.toggle_conversation)
+        orb_row = QHBoxLayout()
+        orb_row.addStretch()
+        orb_row.addWidget(self.orb)
+        orb_row.addStretch()
+        root.addLayout(orb_row)
+
+        # תווית מתחת לכדור
+        self.orb_label = QLabel("לחץ כדי להתחיל")
+        self.orb_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Medium))
+        self.orb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.orb_label.setStyleSheet(f"color: {Palette.TEXT};")
+        root.addWidget(self.orb_label)
 
         hint = QLabel("מקש רווח להתחלה/עצירה · אפשר להפריע ל-Gemini באמצע")
-        hint.setFont(QFont("Segoe UI", 10))
+        hint.setFont(QFont("Segoe UI", 9))
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet(f"color: {Palette.TEXT_MUTED};")
         root.addWidget(hint)
@@ -548,22 +693,17 @@ class VoiceApp(QMainWindow):
         return btn
 
     def _style_start_button(self):
-        self.main_btn.setText("🎙  התחל שיחה")
-        self.main_btn.setStyleSheet(f"""
-            QPushButton {{ background: {Palette.ACCENT}; color: #00282e;
-                           border: none; border-radius: 18px; }}
-            QPushButton:hover {{ background: {_lighten(Palette.ACCENT)}; }}
-            QPushButton:pressed {{ background: {Palette.ACCENT_DARK}; }}
-        """)
+        """מצב 'מוכן' - הכדור כבוי, תווית הזמנה."""
+        self.orb.set_state("idle")
+        self.orb_label.setText("לחץ כדי להתחיל")
 
     def _style_stop_button(self):
-        self.main_btn.setText("⏹  סיים שיחה")
-        self.main_btn.setStyleSheet(f"""
-            QPushButton {{ background: {Palette.DANGER}; color: #fff;
-                           border: none; border-radius: 18px; }}
-            QPushButton:hover {{ background: #f4665f; }}
-            QPushButton:pressed {{ background: #d33b38; }}
-        """)
+        """מצב פעיל - תווית עצירה (צבע הכדור נקבע לפי הסטטוס)."""
+        self.orb_label.setText("לחץ כדי לסיים")
+
+    def _on_level(self, level: float):
+        """עוצמת קול חיה → אנימציית הכדור."""
+        self.orb.set_level(level)
 
     # ------------------------------------------------------------------ #
     # דיאלוגים
@@ -631,6 +771,7 @@ class VoiceApp(QMainWindow):
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,
             on_error=self.signals.error.emit,
+            on_level=self.signals.level.emit,
         )
         self.engine.start()
         self._style_stop_button()
@@ -821,6 +962,8 @@ class VoiceApp(QMainWindow):
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {Palette.TEXT};")
         self._pulse_color = color
+        # עדכון מצב הכדור הקולי
+        self.orb.set_state(status)
 
         # פעימה כשמאזין/מדבר/מתחבר - אחרת נקודה קבועה
         if status in ("listening", "speaking", "connecting", "reconnecting"):

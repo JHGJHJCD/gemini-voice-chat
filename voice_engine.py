@@ -96,6 +96,7 @@ class VoiceEngine:
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
+        on_level: Optional[Callable[[float], None]] = None,
     ):
         self.api_key = api_key
         self.voice_name = voice_name          # קול Gemini (Aoede, Kore...)
@@ -107,6 +108,8 @@ class VoiceEngine:
         self.on_user_text = on_user_text or (lambda t: None)
         self.on_bot_text = on_bot_text or (lambda t: None)
         self.on_error = on_error or (lambda e: None)
+        # עוצמת קול (0..1) לאנימציה מגיבה בממשק
+        self.on_level = on_level or (lambda lvl: None)
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -207,6 +210,16 @@ class VoiceEngine:
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def _rms_level(pcm_bytes: bytes) -> float:
+        """מחשב עוצמת קול מנורמלת (0..1) מ-PCM int16."""
+        arr = np.frombuffer(pcm_bytes, dtype=np.int16)
+        if arr.size == 0:
+            return 0.0
+        rms = np.sqrt(np.mean(arr.astype(np.float32) ** 2))
+        # נרמול לוגריתמי גס לטווח 0..1 (32768 = max)
+        return float(min(rms / 8000.0, 1.0))
 
     def _mix_into_recording(self, pcm_bytes: bytes, rate: int):
         """
@@ -434,7 +447,11 @@ class VoiceEngine:
 
             # אם מושתק - מרוקנים את התור אך לא שולחים ל-Gemini
             if self.mic_muted:
+                self.on_level(0.0)
                 continue
+
+            # עוצמת קול המשתמש - לאנימציה
+            self.on_level(self._rms_level(data))
 
             # הקלטה - קול המשתמש (16kHz)
             if self.recording:
@@ -480,6 +497,8 @@ class VoiceEngine:
                 if response.data is not None:
                     self.on_status("speaking")
                     self._play_queue.put(response.data)
+                    # עוצמת קול Gemini - לאנימציה
+                    self.on_level(self._rms_level(response.data))
                     # הקלטה - קול Gemini (24kHz)
                     if self.recording:
                         self._mix_into_recording(response.data, RECV_RATE)
