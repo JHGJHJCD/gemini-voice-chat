@@ -29,6 +29,19 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def resource_path(name: str) -> str:
+    """
+    מחזיר נתיב לקובץ משאב מצורף (אייקון, לוגו) - שונה מקבצי משתמש.
+    כ-.exe: תיקיית החילוץ הזמנית (_MEIPASS) שבה PyInstaller שם משאבים.
+    כקוד רגיל: תיקיית הסקריפט.
+    """
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, name)
+
+
 # ---------------------------------------------------------------------- #
 # קטלוג קולות - שם תצוגה בעברית → שם הקול ב-API של Gemini
 # ---------------------------------------------------------------------- #

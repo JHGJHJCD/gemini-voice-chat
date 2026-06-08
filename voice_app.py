@@ -22,9 +22,10 @@ voice_app.py
 
 import os
 import sys
+import math
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QFont, QPixmap, QShortcut, QKeySequence
+from PyQt6.QtGui import QFont, QPixmap, QShortcut, QKeySequence, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
@@ -331,10 +332,23 @@ class VoiceApp(QMainWindow):
 
         self._turns: list[list[str]] = []
 
+        # אנימציית פעימה לנקודת הסטטוס (תחושת "חי")
+        self._pulse_phase = 0.0
+        self._pulse_color = Palette.TEXT_MUTED
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(40)
+        self._pulse_timer.timeout.connect(self._tick_pulse)
+
         self.setWindowTitle("שיחה קולית עם Gemini")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(620, 860)
         self.setStyleSheet(f"QMainWindow {{ background: {Palette.BG}; }}")
+
+        # אייקון החלון (סרגל משימות + כותרת)
+        icon_path = config.resource_path("app.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
         self._build_ui()
 
         # קיצור מקלדת: רווח להתחלה/עצירה
@@ -363,6 +377,15 @@ class VoiceApp(QMainWindow):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
+        # לוגו האפליקציה (אם קיים)
+        logo_path = config.resource_path("app.png")
+        if os.path.exists(logo_path):
+            logo = QLabel()
+            logo.setPixmap(QPixmap(logo_path).scaled(
+                52, 52, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+            logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            title_box.addWidget(logo)
         title = QLabel("שיחה קולית")
         title.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {Palette.TEXT};")
@@ -756,7 +779,27 @@ class VoiceApp(QMainWindow):
             color = Palette.ACCENT
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {Palette.TEXT};")
-        self.status_dot.setStyleSheet(f"color: {color};")
+        self._pulse_color = color
+
+        # פעימה כשמאזין/מדבר/מתחבר - אחרת נקודה קבועה
+        if status in ("listening", "speaking", "connecting", "reconnecting"):
+            if not self._pulse_timer.isActive():
+                self._pulse_phase = 0.0
+                self._pulse_timer.start()
+        else:
+            self._pulse_timer.stop()
+            self.status_dot.setStyleSheet(f"color: {color};")
+
+    def _tick_pulse(self):
+        """מאנפש את שקיפות נקודת הסטטוס בגל סינוס - תחושת 'חי'."""
+        self._pulse_phase += 0.18
+        # אלפא בין 0.35 ל-1.0
+        alpha = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(self._pulse_phase))
+        h = self._pulse_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        self.status_dot.setStyleSheet(
+            f"color: rgba({r}, {g}, {b}, {alpha:.2f});"
+        )
 
     def _on_user_text(self, text: str):
         self._append_chunk("user", text)
