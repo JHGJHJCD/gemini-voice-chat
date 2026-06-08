@@ -19,7 +19,10 @@ env/
 # ===== אריזת PyInstaller =====
 build/
 dist/
-*.spec
+# (build.spec ו-installer.iss כן נשמרים - הם סקריפטי הבנייה)
+
+# ===== פלט ה-installer (גדול - עולה כ-Release) =====
+installer_output/
 
 # ===== קבצים לא קשורים =====
 *.pdf
