@@ -1,0 +1,11 @@
+# תלויות האפליקציה - התקנה: python -m pip install -r requirements.txt
+google-genai>=1.0.0      # Gemini Live API (אודיו + וידאו דו-כיווני)
+sounddevice>=0.5.0       # מיקרופון ורמקול
+numpy>=1.24.0            # עיבוד אודיו
+PyQt6>=6.6.0            # ממשק גרפי
+qt-material>=2.14        # עיצוב Material Design
+truststore>=0.10.0      # מעקף סינון נטפרי (תעודות Windows)
+mss>=9.0.0              # לכידת מסך
+opencv-python>=4.8.0    # מצלמה
+Pillow>=10.0.0          # עיבוד תמונה
+pygetwindow>=0.0.9      # זיהוי חלונות לשיתוף

@@ -1,0 +1,30 @@
+# ===== סודות - לעולם לא להעלות! =====
+# מפתח ה-API הפרטי שלך
+api_key.txt
+# הגדרות אישיות (קול, התקנים)
+settings.json
+
+# ===== גיבויים =====
+backup_*/
+backup_*.zip
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ===== אריזת PyInstaller =====
+build/
+dist/
+*.spec
+
+# ===== קבצים לא קשורים =====
+*.pdf
+
+# ===== מערכת =====
+.DS_Store
+Thumbs.db
+*.log

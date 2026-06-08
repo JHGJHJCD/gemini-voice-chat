@@ -1,0 +1,2 @@
+הדבק כאן את מפתח ה-API שלך מ-Google AI Studio, ושמור את הקובץ בשם api_key.txt
+קבל מפתח חינם כאן: https://aistudio.google.com/app/apikey
