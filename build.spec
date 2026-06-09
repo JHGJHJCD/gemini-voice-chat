@@ -20,7 +20,7 @@ hiddenimports = []
 hiddenimports += collect_submodules("google.genai")
 hiddenimports += ["sounddevice", "mss", "pygetwindow", "cv2", "PIL", "pypdf",
                    "keyboard", "pvporcupine", "computer_tools", "wakeword",
-                   "knowledge", "documents"]
+                   "knowledge", "documents", "PyQt6.QtNetwork"]
 datas += collect_data_files("pvporcupine")   # מודלים של מילות הפעלה
 
 a = Analysis(

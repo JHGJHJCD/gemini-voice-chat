@@ -1645,8 +1645,28 @@ def get_api_key() -> str:
     return ""
 
 
+SINGLE_INSTANCE_NAME = "GeminiVoiceChat_SingleInstance"
+
+
 def main():
     app = QApplication(sys.argv)
+
+    # ---- נעילת מופע יחיד ----
+    # אם האפליקציה כבר רצה - מבקשים ממנה להציג את החלון ויוצאים,
+    # כדי שלא ייפתחו כמה מופעים (וכמה אייקונים במגש שעונים יחד).
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    probe = QLocalSocket()
+    probe.connectToServer(SINGLE_INSTANCE_NAME)
+    if probe.waitForConnected(300):
+        probe.write(b"show")
+        probe.flush()
+        probe.waitForBytesWritten(300)
+        probe.disconnectFromServer()
+        return  # מופע אחר כבר רץ - יוצאים
+    # אנחנו המופע היחיד - יוצרים שרת האזנה
+    QLocalServer.removeServer(SINGLE_INSTANCE_NAME)  # ניקוי שאריות
+    server = QLocalServer()
+    server.listen(SINGLE_INSTANCE_NAME)
 
     # טעינת ההגדרות כדי לדעת איזו ערכה להחיל
     settings = config.Settings.load()
@@ -1665,6 +1685,17 @@ def main():
         api_key = dialog.api_key
 
     window = VoiceApp(api_key=api_key)
+    window._instance_server = server   # שמירה כדי שלא ייאסף ע"י ה-GC
+
+    # כשמופע חדש מנסה להיפתח - מציגים את החלון הקיים
+    def _on_new_connection():
+        conn = server.nextPendingConnection()
+        if conn:
+            conn.close()
+        window._restore_window()
+
+    server.newConnection.connect(_on_new_connection)
+
     window.show()
     sys.exit(app.exec())
 
