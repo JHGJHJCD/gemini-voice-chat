@@ -232,6 +232,9 @@ class Settings:
     global_hotkey: str = "ctrl+alt+space"   # קיצור גלובלי
     minimize_to_tray: bool = True            # מזעור למגש במקום סגירה
     memory_enabled: bool = True              # זיכרון בין שיחות
+    wake_word_enabled: bool = False          # מילת הפעלה
+    picovoice_key: str = ""                  # מפתח Picovoice
+    wake_keyword: str = "jarvis"             # מילת ההפעלה
 
     def save(self):
         try:
@@ -249,6 +252,9 @@ class Settings:
                     "global_hotkey": self.global_hotkey,
                     "minimize_to_tray": self.minimize_to_tray,
                     "memory_enabled": self.memory_enabled,
+                    "wake_word_enabled": self.wake_word_enabled,
+                    "picovoice_key": self.picovoice_key,
+                    "wake_keyword": self.wake_keyword,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -271,6 +277,9 @@ class Settings:
                 global_hotkey=data.get("global_hotkey", "ctrl+alt+space"),
                 minimize_to_tray=data.get("minimize_to_tray", True),
                 memory_enabled=data.get("memory_enabled", True),
+                wake_word_enabled=data.get("wake_word_enabled", False),
+                picovoice_key=data.get("picovoice_key", ""),
+                wake_keyword=data.get("wake_keyword", "jarvis"),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה

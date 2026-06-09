@@ -43,6 +43,7 @@ from voice_engine import VoiceEngine
 from media import ScreenCapturer, CameraCapturer
 import config
 import knowledge
+from wakeword import WakeWordListener, BUILTIN_KEYWORDS
 
 
 # ---------------------------------------------------------------------- #
@@ -89,6 +90,7 @@ class EngineSignals(QObject):
     level = pyqtSignal(float)
     hotkey = pyqtSignal()           # קיצור גלובלי נלחץ
     update_found = pyqtSignal(str)  # נמצאה גרסה חדשה (tag)
+    wake = pyqtSignal()             # מילת הפעלה זוהתה
 
 
 STATUS_DISPLAY = {
@@ -327,6 +329,43 @@ class SettingsDialog(QDialog):
         self.memory_chk.setChecked(self.settings.memory_enabled)
         layout.addWidget(self.memory_chk)
 
+        # --- מילת הפעלה ---
+        self.wake_chk = QCheckBox("🗣️  מילת הפעלה — התחל שיחה בקול ('Jarvis', 'Computer')")
+        self.wake_chk.setStyleSheet(chk_style)
+        self.wake_chk.setChecked(self.settings.wake_word_enabled)
+        layout.addWidget(self.wake_chk)
+
+        wake_form = QFormLayout()
+        wake_form.setSpacing(8)
+        self.wake_combo = QComboBox()
+        self.wake_combo.setStyleSheet(self._combo_style())
+        for kw in BUILTIN_KEYWORDS:
+            self.wake_combo.addItem(kw, kw)
+        idx = self.wake_combo.findData(self.settings.wake_keyword)
+        if idx >= 0:
+            self.wake_combo.setCurrentIndex(idx)
+        lbl_kw = QLabel("המילה:")
+        lbl_kw.setStyleSheet(label_style)
+        wake_form.addRow(lbl_kw, self.wake_combo)
+
+        self.pico_field = QLineEdit(self.settings.picovoice_key)
+        self.pico_field.setPlaceholderText("מפתח Picovoice (חינם מ-console.picovoice.ai)")
+        self.pico_field.setStyleSheet(
+            f"QLineEdit {{ background: {Palette.CARD}; color: {Palette.TEXT}; "
+            f"border: 1px solid {Palette.CARD_BORDER}; border-radius: 8px; "
+            f"padding: 7px 10px; }}")
+        lbl_pk = QLabel("מפתח:")
+        lbl_pk.setStyleSheet(label_style)
+        wake_form.addRow(lbl_pk, self.pico_field)
+        layout.addLayout(wake_form)
+
+        pico_link = QLabel(
+            '<a href="https://console.picovoice.ai/" '
+            f'style="color:{Palette.ACCENT};">קבל מפתח Picovoice חינם →</a>')
+        pico_link.setOpenExternalLinks(True)
+        pico_link.setStyleSheet("font-size: 10px;")
+        layout.addWidget(pico_link)
+
         note = QLabel("הקול, ההתקנים והכלים יחולו בשיחה הבאה. "
                       "שינוי ערכת צבעים יחול בהפעלה הבאה.")
         note.setWordWrap(True)
@@ -360,6 +399,9 @@ class SettingsDialog(QDialog):
         self.settings.computer_control = self.control_chk.isChecked()
         self.settings.echo_suppression = self.echo_chk.isChecked()
         self.settings.memory_enabled = self.memory_chk.isChecked()
+        self.settings.wake_word_enabled = self.wake_chk.isChecked()
+        self.settings.wake_keyword = self.wake_combo.currentData()
+        self.settings.picovoice_key = self.pico_field.text().strip()
         self.settings.save()
         self.accept()
 
@@ -628,6 +670,8 @@ class VoiceApp(QMainWindow):
         self.signals.level.connect(self._on_level)
         self.signals.hotkey.connect(self.toggle_conversation)
         self.signals.update_found.connect(self._on_update_found)
+        self.signals.wake.connect(self._on_wake_detected)
+        self._wake_listener: WakeWordListener | None = None
 
         self._turns: list[list[str]] = []
 
@@ -668,6 +712,8 @@ class VoiceApp(QMainWindow):
         self._setup_tray()
         self._setup_global_hotkey()
         self._check_updates_async()
+        # שלב 3: מילת הפעלה
+        self._setup_wake_word()
 
     # ------------------------------------------------------------------ #
     # בניית הממשק
@@ -914,6 +960,8 @@ class VoiceApp(QMainWindow):
                 self.engine.set_echo_suppression(self.settings.echo_suppression)
                 v = config.get_voice_by_api(self.settings.voice_api)
                 self.status_label.setText(f"הקול ישתנה ל{v.hebrew_name} בשיחה הבאה")
+            # עדכון מילת ההפעלה לפי ההגדרות החדשות
+            self._setup_wake_word()
 
     def open_instruction(self):
         if InstructionDialog(self.settings, self).exec():
@@ -993,6 +1041,7 @@ class VoiceApp(QMainWindow):
             on_error=self.signals.error.emit,
             on_level=self.signals.level.emit,
         )
+        self._stop_wake_word()   # משחררים את המיקרופון לשיחה
         self.engine.set_echo_suppression(self.settings.echo_suppression)
         self.engine.start()
         self._session_start = time.monotonic()   # מעקב שימוש
@@ -1029,6 +1078,7 @@ class VoiceApp(QMainWindow):
         self._style_start_button()
         self._update_media_enabled(False)
         self._set_status("stopped")
+        self._setup_wake_word()   # חידוש האזנה למילת הפעלה
 
     def _update_usage_label(self):
         """מעדכן את תווית השימוש המצטבר."""
@@ -1375,6 +1425,40 @@ class VoiceApp(QMainWindow):
             pass  # אם הקיצור תפוס/לא חוקי - מתעלמים
 
     # ------------------------------------------------------------------ #
+    # מילת הפעלה
+    # ------------------------------------------------------------------ #
+    def _setup_wake_word(self):
+        """מפעיל את ההאזנה למילת הפעלה (אם מופעל ויש מפתח)."""
+        self._stop_wake_word()
+        if not (self.settings.wake_word_enabled and self.settings.picovoice_key):
+            return
+        # לא מאזינים בזמן שיחה (המיקרופון תפוס)
+        if self.engine and self.engine.is_running():
+            return
+        try:
+            self._wake_listener = WakeWordListener(
+                access_key=self.settings.picovoice_key,
+                keyword=self.settings.wake_keyword,
+                input_device=self.settings.input_device,
+                on_detected=lambda: self.signals.wake.emit(),
+                on_error=lambda e: None,
+            )
+            self._wake_listener.start()
+        except Exception:
+            self._wake_listener = None
+
+    def _stop_wake_word(self):
+        if self._wake_listener:
+            self._wake_listener.stop()
+            self._wake_listener = None
+
+    def _on_wake_detected(self):
+        """מילת הפעלה זוהתה - מתחיל שיחה אם לא פעילה."""
+        if not (self.engine and self.engine.is_running()):
+            self._restore_window()
+            self._start_conversation()
+
+    # ------------------------------------------------------------------ #
     # עדכון אוטומטי
     # ------------------------------------------------------------------ #
     def _check_updates_async(self):
@@ -1432,6 +1516,7 @@ class VoiceApp(QMainWindow):
             )
             return
         self._stop_video()
+        self._stop_wake_word()
         if self.engine:
             self.engine.stop()
         try:
