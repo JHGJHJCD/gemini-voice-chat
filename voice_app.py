@@ -658,8 +658,9 @@ class VoiceApp(QMainWindow):
         self.capturer = None              # ScreenCapturer / CameraCapturer / None
         self.video_mode: str | None = None  # "screen" / "camera" / None
         self.video_timer = QTimer(self)
-        self.video_timer.setInterval(1000)  # פריים לשנייה
+        self.video_timer.setInterval(100)   # ~10fps לתצוגה חלקה
         self.video_timer.timeout.connect(self._tick_video)
+        self._last_video_send = 0.0          # מתי נשלח פריים אחרון ל-Gemini
 
         # גשר signals
         self.signals = EngineSignals()
@@ -1238,12 +1239,15 @@ class VoiceApp(QMainWindow):
         self.video_timer.start()
 
     def _tick_video(self):
-        """נקרא כל שנייה: לוכד פריים, מציג תצוגה, ושולח ל-Gemini."""
+        """
+        נקרא בתדירות גבוהה (תצוגה חלקה ~10fps), אך שולח ל-Gemini
+        רק פעם בשנייה (כפי ש-Google ממליץ - חוסך רוחב פס).
+        """
         if not self.capturer:
             return
+        # --- תצוגה מקדימה חלקה (בכל קריאה) ---
         try:
             qimg = self.capturer.grab_qimage()
-            jpeg = self.capturer.grab_jpeg()
         except Exception:
             return
         if qimg:
@@ -1253,8 +1257,16 @@ class VoiceApp(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self.preview.setPixmap(pix)
-        if jpeg and self.engine:
-            self.engine.set_video_frame(jpeg)
+        # --- שליחה ל-Gemini ~פעם בשנייה ---
+        now = time.monotonic()
+        if now - self._last_video_send >= 1.0:
+            self._last_video_send = now
+            try:
+                jpeg = self.capturer.grab_jpeg()
+            except Exception:
+                jpeg = None
+            if jpeg and self.engine:
+                self.engine.set_video_frame(jpeg)
 
     def _stop_video(self, keep_button: str | None = None):
         """עוצר וידאו ומשחרר את הלוכד."""
