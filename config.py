@@ -230,6 +230,7 @@ class Settings:
     echo_suppression: bool = True
     global_hotkey: str = "ctrl+alt+space"   # קיצור גלובלי
     minimize_to_tray: bool = True            # מזעור למגש במקום סגירה
+    memory_enabled: bool = True              # זיכרון בין שיחות
 
     def save(self):
         try:
@@ -245,6 +246,7 @@ class Settings:
                     "echo_suppression": self.echo_suppression,
                     "global_hotkey": self.global_hotkey,
                     "minimize_to_tray": self.minimize_to_tray,
+                    "memory_enabled": self.memory_enabled,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -265,6 +267,7 @@ class Settings:
                 echo_suppression=data.get("echo_suppression", True),
                 global_hotkey=data.get("global_hotkey", "ctrl+alt+space"),
                 minimize_to_tray=data.get("minimize_to_tray", True),
+                memory_enabled=data.get("memory_enabled", True),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה

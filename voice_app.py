@@ -42,6 +42,7 @@ from qt_material import apply_stylesheet
 from voice_engine import VoiceEngine
 from media import ScreenCapturer, CameraCapturer
 import config
+import knowledge
 
 
 # ---------------------------------------------------------------------- #
@@ -316,6 +317,11 @@ class SettingsDialog(QDialog):
         echo_note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
         layout.addWidget(echo_note)
 
+        self.memory_chk = QCheckBox("🧩  זיכרון בין שיחות — Gemini יזכור שיחות קודמות")
+        self.memory_chk.setStyleSheet(chk_style)
+        self.memory_chk.setChecked(self.settings.memory_enabled)
+        layout.addWidget(self.memory_chk)
+
         note = QLabel("הקול, ההתקנים והכלים יחולו בשיחה הבאה. "
                       "שינוי ערכת צבעים יחול בהפעלה הבאה.")
         note.setWordWrap(True)
@@ -347,8 +353,121 @@ class SettingsDialog(QDialog):
         self.settings.web_search = self.search_chk.isChecked()
         self.settings.deep_thinking = self.think_chk.isChecked()
         self.settings.echo_suppression = self.echo_chk.isChecked()
+        self.settings.memory_enabled = self.memory_chk.isChecked()
         self.settings.save()
         self.accept()
+
+
+# ====================================================================== #
+# דיאלוג בסיס ידע - ניהול מסמכים קבועים + ניקוי זיכרון
+# ====================================================================== #
+class KnowledgeDialog(QDialog):
+    def __init__(self, kb: "knowledge.KnowledgeBase",
+                 memory: "knowledge.Memory", parent=None):
+        super().__init__(parent)
+        self.kb = kb
+        self.memory = memory
+        self.setWindowTitle("בסיס ידע וזיכרון")
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setMinimumSize(480, 420)
+        self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 22, 22, 22)
+        layout.setSpacing(12)
+
+        heading = QLabel("📚 בסיס ידע קבוע")
+        heading.setFont(QFont("Segoe UI", 17, QFont.Weight.Bold))
+        heading.setStyleSheet(f"color: {Palette.TEXT};")
+        layout.addWidget(heading)
+
+        desc = QLabel("מסמכים שתוסיף כאן יהיו זמינים ל-Gemini בכל שיחה "
+                      "(לא רק פעם אחת). PDF או טקסט.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 12px;")
+        layout.addWidget(desc)
+
+        # רשימת המסמכים
+        self.list_widget = QTextEdit()
+        self.list_widget.setReadOnly(True)
+        self.list_widget.setStyleSheet(f"""
+            QTextEdit {{ background: {Palette.CARD}; color: {Palette.TEXT};
+                         border: 1px solid {Palette.CARD_BORDER};
+                         border-radius: 10px; padding: 10px; }}
+        """)
+        layout.addWidget(self.list_widget, stretch=1)
+        self._refresh_list()
+
+        # כפתורי פעולה
+        row = QHBoxLayout()
+        add_btn = QPushButton("➕  הוסף מסמך")
+        add_btn.setStyleSheet(self._btn_style(Palette.ACCENT, "#00282e"))
+        add_btn.clicked.connect(self._add_doc)
+        clear_btn = QPushButton("🗑  נקה הכל")
+        clear_btn.setStyleSheet(self._btn_style(Palette.CARD, Palette.TEXT))
+        clear_btn.clicked.connect(self._clear_kb)
+        row.addWidget(add_btn)
+        row.addWidget(clear_btn)
+        layout.addLayout(row)
+
+        # ניקוי זיכרון שיחות
+        mem_btn = QPushButton("🧹  נקה זיכרון שיחות")
+        mem_btn.setStyleSheet(self._btn_style(Palette.CARD, Palette.TEXT))
+        mem_btn.clicked.connect(self._clear_memory)
+        layout.addWidget(mem_btn)
+
+        close_btn = QPushButton("סגור")
+        close_btn.setStyleSheet(self._btn_style(Palette.ACCENT, "#00282e"))
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+    def _btn_style(self, bg, fg):
+        return (f"QPushButton {{ background: {bg}; color: {fg}; "
+                f"border: 1px solid {Palette.CARD_BORDER}; border-radius: 8px; "
+                f"padding: 9px 16px; font-weight: bold; }}")
+
+    def _refresh_list(self):
+        names = self.kb.names()
+        if not names:
+            self.list_widget.setHtml(
+                f'<div style="color:{Palette.TEXT_MUTED}; text-align:center; '
+                f'padding-top:20px;">אין מסמכים עדיין</div>')
+        else:
+            items = "".join(
+                f'<div style="padding:4px 0;">📄 {n}</div>' for n in names)
+            self.list_widget.setHtml(
+                f'<div style="color:{Palette.TEXT};">{items}</div>')
+
+    def _add_doc(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "בחר מסמך לבסיס הידע", "",
+            "מסמכים (*.pdf *.txt *.md *.csv);;כל הקבצים (*.*)")
+        if not path:
+            return
+        import documents
+        try:
+            text = documents.extract_text(path)
+        except Exception as e:
+            QMessageBox.warning(self, "שגיאה", str(e))
+            return
+        self.kb.add(os.path.basename(path), text)
+        self._refresh_list()
+
+    def _clear_kb(self):
+        if QMessageBox.question(self, "נקה בסיס ידע", "למחוק את כל המסמכים?") \
+                == QMessageBox.StandardButton.Yes:
+            for n in list(self.kb.names()):
+                self.kb.remove(n)
+            self._refresh_list()
+
+    def _clear_memory(self):
+        if QMessageBox.question(self, "נקה זיכרון",
+                                "למחוק את זיכרון השיחות הקודמות?") \
+                == QMessageBox.StandardButton.Yes:
+            self.memory.clear()
+            QMessageBox.information(self, "נוקה", "זיכרון השיחות נמחק.")
 
 
 # ====================================================================== #
@@ -512,6 +631,10 @@ class VoiceApp(QMainWindow):
         self._tray: QSystemTrayIcon | None = None
         self._force_quit = False
 
+        # זיכרון בין שיחות + בסיס ידע
+        self.memory = knowledge.Memory.load()
+        self.kb = knowledge.KnowledgeBase.load()
+
         # אנימציית פעימה לנקודת הסטטוס (תחושת "חי")
         self._pulse_phase = 0.0
         self._pulse_color = Palette.TEXT_MUTED
@@ -566,6 +689,8 @@ class VoiceApp(QMainWindow):
         self.persona_btn.clicked.connect(self.open_instruction)
         self.save_btn = self._icon_button("💾", "שמירת תמליל השיחה לקובץ")
         self.save_btn.clicked.connect(self.save_transcript)
+        self.kb_btn = self._icon_button("📚", "בסיס ידע וזיכרון")
+        self.kb_btn.clicked.connect(self.open_knowledge)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
@@ -594,6 +719,7 @@ class VoiceApp(QMainWindow):
         left_btns.addWidget(self.settings_btn)
         left_btns.addWidget(self.persona_btn)
         left_btns.addWidget(self.save_btn)
+        left_btns.addWidget(self.kb_btn)
         left_wrap = QWidget()
         left_wrap.setLayout(left_btns)
         left_wrap.setStyleSheet("background: transparent;")
@@ -601,7 +727,7 @@ class VoiceApp(QMainWindow):
         title_row.addWidget(left_wrap)
         title_row.addLayout(title_box, stretch=1)
         spacer = QWidget()
-        spacer.setFixedSize(154, 46)   # תואם לרוחב 3 הכפתורים משמאל
+        spacer.setFixedSize(208, 46)   # תואם לרוחב 4 הכפתורים משמאל
         spacer.setStyleSheet("background: transparent;")
         title_row.addWidget(spacer)
         root.addLayout(title_row)
@@ -788,6 +914,9 @@ class VoiceApp(QMainWindow):
             if self.engine and self.engine.is_running():
                 self.status_label.setText("ההנחיה החדשה תחול בשיחה הבאה")
 
+    def open_knowledge(self):
+        KnowledgeDialog(self.kb, self.memory, self).exec()
+
     def save_transcript(self):
         """שומר את תמליל השיחה לקובץ טקסט."""
         if not self._turns:
@@ -830,12 +959,25 @@ class VoiceApp(QMainWindow):
     def _start_conversation(self):
         self._turns = []
         self.transcript.clear()
+        # הרכבת הנחיית המערכת עם זיכרון + בסיס ידע
+        instruction = self.settings.system_instruction
+        extras = []
+        if self.settings.memory_enabled:
+            mem = self.memory.context()
+            if mem:
+                extras.append(mem)
+        kb = self.kb.context()
+        if kb:
+            extras.append(kb)
+        if extras:
+            instruction = instruction + "\n\n" + "\n\n".join(extras)
+
         self.engine = VoiceEngine(
             api_key=self.api_key,
             voice_name=self.settings.voice_api,
             input_device=self.settings.input_device,
             output_device=self.settings.output_device,
-            system_instruction=self.settings.system_instruction,
+            system_instruction=instruction,
             web_search=self.settings.web_search,
             deep_thinking=self.settings.deep_thinking,
             on_status=self.signals.status.emit,
@@ -863,6 +1005,13 @@ class VoiceApp(QMainWindow):
         if self.engine:
             self.engine.stop()
             self.engine = None
+        # שמירת השיחה לזיכרון (אם מופעל ויש תוכן)
+        if self.settings.memory_enabled:
+            real_turns = [t for t in self._turns if t[0] in ("user", "bot")]
+            if real_turns:
+                from PyQt6.QtCore import QDateTime
+                stamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm")
+                self.memory.add_conversation(real_turns, stamp)
         # צבירת זמן השיחה למעקב השימוש
         if self._session_start:
             elapsed = time.monotonic() - self._session_start

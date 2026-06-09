@@ -3,6 +3,12 @@
 api_key.txt
 # הגדרות אישיות (קול, התקנים)
 settings.json
+# נתונים אישיים - זיכרון, ידע, שימוש
+memory.json
+knowledge.json
+usage.json
+# הקלטות
+הקלטות/
 
 # ===== גיבויים =====
 backup_*/
