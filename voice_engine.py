@@ -108,6 +108,9 @@ class VoiceEngine:
         self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
         self.web_search = web_search        # כלי חיפוש Google
         self.deep_thinking = deep_thinking  # מצב חשיבה מורחב
+        # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
+        self.echo_suppression = True
+        self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
         self.on_status = on_status or (lambda s: None)
         self.on_user_text = on_user_text or (lambda t: None)
         self.on_bot_text = on_bot_text or (lambda t: None)
@@ -173,6 +176,10 @@ class VoiceEngine:
     def set_muted(self, muted: bool):
         """משתיק/מבטל השתקה של המיקרופון (לא מנתק את השיחה)."""
         self.mic_muted = muted
+
+    def set_echo_suppression(self, enabled: bool):
+        """מפעיל/מכבה דיכוי הד (השתקת מיק בזמן דיבור של Gemini)."""
+        self.echo_suppression = enabled
 
     def set_video_frame(self, jpeg: bytes | None):
         """
@@ -418,6 +425,9 @@ class VoiceEngine:
                     buf.extend(self._play_queue.get_nowait())
                 except queue.Empty:
                     break
+            if len(buf) > 0:
+                # הושמע אודיו ממשי - מסמנים זמן (לדיכוי הד)
+                self._last_output_time = time.monotonic()
             if len(buf) < need:
                 # אין מספיק אודיו - ממלא בשקט
                 buf.extend(b"\x00" * (need - len(buf)))
@@ -477,6 +487,14 @@ class VoiceEngine:
 
             # אם מושתק - מרוקנים את התור אך לא שולחים ל-Gemini
             if self.mic_muted:
+                self.on_level(0.0)
+                continue
+
+            # דיכוי הד - אם Gemini מדבר כרגע (השמיע אודיו לאחרונה),
+            # לא שולחים את המיקרופון כדי שלא יקלוט את עצמו.
+            # חלון של 200ms אחרי ההשמעה האחרונה כדי לתפוס את ה'זנב'.
+            if self.echo_suppression and \
+                    (time.monotonic() - self._last_output_time) < 0.2:
                 self.on_level(0.0)
                 continue
 

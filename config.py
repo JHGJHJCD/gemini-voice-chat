@@ -223,6 +223,7 @@ class Settings:
     theme: str = DEFAULT_THEME
     web_search: bool = False
     deep_thinking: bool = False
+    echo_suppression: bool = True
 
     def save(self):
         try:
@@ -235,6 +236,7 @@ class Settings:
                     "theme": self.theme,
                     "web_search": self.web_search,
                     "deep_thinking": self.deep_thinking,
+                    "echo_suppression": self.echo_suppression,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -252,6 +254,7 @@ class Settings:
                 theme=data.get("theme", DEFAULT_THEME),
                 web_search=data.get("web_search", False),
                 deep_thinking=data.get("deep_thinking", False),
+                echo_suppression=data.get("echo_suppression", True),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה

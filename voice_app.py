@@ -303,6 +303,16 @@ class SettingsDialog(QDialog):
         self.think_chk.setChecked(self.settings.deep_thinking)
         layout.addWidget(self.think_chk)
 
+        self.echo_chk = QCheckBox("🔇  דיכוי הד — למניעת מצב ש-Gemini שומע את עצמו (לרמקולים)")
+        self.echo_chk.setStyleSheet(chk_style)
+        self.echo_chk.setChecked(self.settings.echo_suppression)
+        layout.addWidget(self.echo_chk)
+
+        echo_note = QLabel("    כבה רק אם אתה משתמש באוזניות (אז אפשר להפריע ל-Gemini תוך כדי דיבור)")
+        echo_note.setWordWrap(True)
+        echo_note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
+        layout.addWidget(echo_note)
+
         note = QLabel("הקול, ההתקנים והכלים יחולו בשיחה הבאה. "
                       "שינוי ערכת צבעים יחול בהפעלה הבאה.")
         note.setWordWrap(True)
@@ -333,6 +343,7 @@ class SettingsDialog(QDialog):
         self.settings.theme = self.theme_combo.currentData()
         self.settings.web_search = self.search_chk.isChecked()
         self.settings.deep_thinking = self.think_chk.isChecked()
+        self.settings.echo_suppression = self.echo_chk.isChecked()
         self.settings.save()
         self.accept()
 
@@ -742,6 +753,8 @@ class VoiceApp(QMainWindow):
     def open_settings(self):
         if SettingsDialog(self.settings, self).exec():
             if self.engine and self.engine.is_running():
+                # דיכוי הד חל מיד; שאר ההגדרות בשיחה הבאה
+                self.engine.set_echo_suppression(self.settings.echo_suppression)
                 v = config.get_voice_by_api(self.settings.voice_api)
                 self.status_label.setText(f"הקול ישתנה ל{v.hebrew_name} בשיחה הבאה")
 
@@ -806,6 +819,7 @@ class VoiceApp(QMainWindow):
             on_error=self.signals.error.emit,
             on_level=self.signals.level.emit,
         )
+        self.engine.set_echo_suppression(self.settings.echo_suppression)
         self.engine.start()
         self._style_stop_button()
         self._update_media_enabled(True)
