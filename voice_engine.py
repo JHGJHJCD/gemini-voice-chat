@@ -94,6 +94,7 @@ class VoiceEngine:
         system_instruction: str | None = None,
         web_search: bool = False,
         deep_thinking: bool = False,
+        computer_control: bool = False,
         on_status: Optional[Callable[[str], None]] = None,
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
@@ -108,6 +109,7 @@ class VoiceEngine:
         self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
         self.web_search = web_search        # כלי חיפוש Google
         self.deep_thinking = deep_thinking  # מצב חשיבה מורחב
+        self.computer_control = computer_control  # פתיחת תוכנות/אתרים בקול
         # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
         self.echo_suppression = True
         self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
@@ -354,9 +356,16 @@ class VoiceEngine:
             "output_audio_transcription": {},
         }
 
-        # כלי חיפוש Google - תשובות עדכניות מהאינטרנט
+        # כלים: חיפוש Google + שליטה במחשב (function calling)
+        tools = []
         if self.web_search:
-            config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
+        if self.computer_control:
+            import computer_tools
+            tools.append({"function_declarations":
+                          computer_tools.FUNCTION_DECLARATIONS})
+        if tools:
+            config["tools"] = tools
 
         # חשיבה מעמיקה - Gemini חושב לפני שעונה (איטי אך מדויק יותר)
         if self.deep_thinking:
@@ -541,6 +550,11 @@ class VoiceEngine:
                 if not self._running:
                     return
 
+                # קריאה לפונקציה (שליטה במחשב)
+                if getattr(response, "tool_call", None):
+                    await self._handle_tool_call(session, response.tool_call)
+                    continue
+
                 # אודיו - לתור ההשמעה
                 if response.data is not None:
                     self.on_status("speaking")
@@ -571,6 +585,21 @@ class VoiceEngine:
                 # סוף תור - חזרה להאזנה
                 if sc.turn_complete:
                     self.on_status("listening")
+
+    async def _handle_tool_call(self, session, tool_call):
+        """מבצע קריאות פונקציה של Gemini (שליטה במחשב) ומחזיר תוצאה."""
+        import computer_tools
+        responses = []
+        for fc in tool_call.function_calls:
+            args = dict(fc.args) if fc.args else {}
+            self.on_bot_text(f"[מבצע: {fc.name}] ")
+            result = computer_tools.execute(fc.name, args)
+            responses.append(types.FunctionResponse(
+                id=fc.id, name=fc.name, response={"result": result}))
+        try:
+            await session.send_tool_response(function_responses=responses)
+        except Exception:
+            pass
 
 
 # בדיקה עצמאית מהטרמינל

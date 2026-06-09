@@ -307,6 +307,11 @@ class SettingsDialog(QDialog):
         self.think_chk.setChecked(self.settings.deep_thinking)
         layout.addWidget(self.think_chk)
 
+        self.control_chk = QCheckBox("🖱️  שליטה במחשב — פתיחת תוכנות, אתרים, פתקים בקול")
+        self.control_chk.setStyleSheet(chk_style)
+        self.control_chk.setChecked(self.settings.computer_control)
+        layout.addWidget(self.control_chk)
+
         self.echo_chk = QCheckBox("🔇  דיכוי הד — למניעת מצב ש-Gemini שומע את עצמו (לרמקולים)")
         self.echo_chk.setStyleSheet(chk_style)
         self.echo_chk.setChecked(self.settings.echo_suppression)
@@ -352,6 +357,7 @@ class SettingsDialog(QDialog):
         self.settings.theme = self.theme_combo.currentData()
         self.settings.web_search = self.search_chk.isChecked()
         self.settings.deep_thinking = self.think_chk.isChecked()
+        self.settings.computer_control = self.control_chk.isChecked()
         self.settings.echo_suppression = self.echo_chk.isChecked()
         self.settings.memory_enabled = self.memory_chk.isChecked()
         self.settings.save()
@@ -980,6 +986,7 @@ class VoiceApp(QMainWindow):
             system_instruction=instruction,
             web_search=self.settings.web_search,
             deep_thinking=self.settings.deep_thinking,
+            computer_control=self.settings.computer_control,
             on_status=self.signals.status.emit,
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,

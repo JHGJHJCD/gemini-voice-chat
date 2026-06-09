@@ -227,6 +227,7 @@ class Settings:
     theme: str = DEFAULT_THEME
     web_search: bool = False
     deep_thinking: bool = False
+    computer_control: bool = False           # שליטה במחשב בקול
     echo_suppression: bool = True
     global_hotkey: str = "ctrl+alt+space"   # קיצור גלובלי
     minimize_to_tray: bool = True            # מזעור למגש במקום סגירה
@@ -243,6 +244,7 @@ class Settings:
                     "theme": self.theme,
                     "web_search": self.web_search,
                     "deep_thinking": self.deep_thinking,
+                    "computer_control": self.computer_control,
                     "echo_suppression": self.echo_suppression,
                     "global_hotkey": self.global_hotkey,
                     "minimize_to_tray": self.minimize_to_tray,
@@ -264,6 +266,7 @@ class Settings:
                 theme=data.get("theme", DEFAULT_THEME),
                 web_search=data.get("web_search", False),
                 deep_thinking=data.get("deep_thinking", False),
+                computer_control=data.get("computer_control", False),
                 echo_suppression=data.get("echo_suppression", True),
                 global_hotkey=data.get("global_hotkey", "ctrl+alt+space"),
                 minimize_to_tray=data.get("minimize_to_tray", True),
