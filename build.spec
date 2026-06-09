@@ -18,7 +18,7 @@ datas += [("app.png", "."), ("app.ico", ".")]   # אייקון ולוגו
 # מודולים שעלולים להתפספס בזיהוי האוטומטי
 hiddenimports = []
 hiddenimports += collect_submodules("google.genai")
-hiddenimports += ["sounddevice", "mss", "pygetwindow", "cv2", "PIL"]
+hiddenimports += ["sounddevice", "mss", "pygetwindow", "cv2", "PIL", "pypdf"]
 
 a = Analysis(
     ["voice_app.py"],

@@ -221,6 +221,8 @@ class Settings:
     output_device: int | None = None
     system_instruction: str = DEFAULT_INSTRUCTION
     theme: str = DEFAULT_THEME
+    web_search: bool = False
+    deep_thinking: bool = False
 
     def save(self):
         try:
@@ -231,6 +233,8 @@ class Settings:
                     "output_device": self.output_device,
                     "system_instruction": self.system_instruction,
                     "theme": self.theme,
+                    "web_search": self.web_search,
+                    "deep_thinking": self.deep_thinking,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -246,6 +250,8 @@ class Settings:
                 output_device=data.get("output_device"),
                 system_instruction=data.get("system_instruction", DEFAULT_INSTRUCTION),
                 theme=data.get("theme", DEFAULT_THEME),
+                web_search=data.get("web_search", False),
+                deep_thinking=data.get("deep_thinking", False),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה

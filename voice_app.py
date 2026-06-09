@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
     QComboBox, QFormLayout, QDialogButtonBox, QFrame, QFileDialog, QLineEdit,
+    QCheckBox,
 )
 
 from qt_material import apply_stylesheet
@@ -278,7 +279,31 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        note = QLabel("הקול וההתקנים יחולו בשיחה הבאה. "
+        # --- כלים מתקדמים ---
+        tools_title = QLabel("כלים מתקדמים")
+        tools_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        tools_title.setStyleSheet(f"color: {Palette.ACCENT}; margin-top: 8px;")
+        layout.addWidget(tools_title)
+
+        chk_style = f"""
+            QCheckBox {{ color: {Palette.TEXT}; font-size: 13px; spacing: 8px; }}
+            QCheckBox::indicator {{ width: 20px; height: 20px; border-radius: 5px;
+                                    border: 1px solid {Palette.CARD_BORDER};
+                                    background: {Palette.CARD}; }}
+            QCheckBox::indicator:checked {{ background: {Palette.ACCENT};
+                                            border-color: {Palette.ACCENT}; }}
+        """
+        self.search_chk = QCheckBox("🔍  חיפוש באינטרנט — תשובות עדכניות מ-Google")
+        self.search_chk.setStyleSheet(chk_style)
+        self.search_chk.setChecked(self.settings.web_search)
+        layout.addWidget(self.search_chk)
+
+        self.think_chk = QCheckBox("🧠  חשיבה מעמיקה — מדויק יותר, אך איטי יותר")
+        self.think_chk.setStyleSheet(chk_style)
+        self.think_chk.setChecked(self.settings.deep_thinking)
+        layout.addWidget(self.think_chk)
+
+        note = QLabel("הקול, ההתקנים והכלים יחולו בשיחה הבאה. "
                       "שינוי ערכת צבעים יחול בהפעלה הבאה.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
@@ -306,6 +331,8 @@ class SettingsDialog(QDialog):
         self.settings.input_device = self.input_combo.currentData()
         self.settings.output_device = self.output_combo.currentData()
         self.settings.theme = self.theme_combo.currentData()
+        self.settings.web_search = self.search_chk.isChecked()
+        self.settings.deep_thinking = self.think_chk.isChecked()
         self.settings.save()
         self.accept()
 
@@ -610,10 +637,14 @@ class VoiceApp(QMainWindow):
         self.cam_btn.clicked.connect(lambda: self._toggle_video("camera"))
         self.record_btn = self._toggle_button("⏺  הקלט", "הקלטת השיחה לקובץ אודיו")
         self.record_btn.clicked.connect(self._toggle_recording)
+        self.doc_btn = self._toggle_button("📄  מסמך", "טען מסמך ש-Gemini יקרא")
+        self.doc_btn.setCheckable(False)   # פעולה חד-פעמית, לא toggle
+        self.doc_btn.clicked.connect(self._load_document)
         media_bar.addWidget(self.mute_btn)
         media_bar.addWidget(self.screen_btn)
         media_bar.addWidget(self.cam_btn)
         media_bar.addWidget(self.record_btn)
+        media_bar.addWidget(self.doc_btn)
         root.addLayout(media_bar)
 
         # בורר מקור וידאו (מוסתר עד שמפעילים מסך/מצלמה)
@@ -767,6 +798,8 @@ class VoiceApp(QMainWindow):
             input_device=self.settings.input_device,
             output_device=self.settings.output_device,
             system_instruction=self.settings.system_instruction,
+            web_search=self.settings.web_search,
+            deep_thinking=self.settings.deep_thinking,
             on_status=self.signals.status.emit,
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,
@@ -796,8 +829,42 @@ class VoiceApp(QMainWindow):
 
     def _update_media_enabled(self, enabled: bool):
         """מאפשר/חוסם את כפתורי המדיה לפי האם שיחה פעילה."""
-        for btn in (self.mute_btn, self.screen_btn, self.cam_btn, self.record_btn):
+        for btn in (self.mute_btn, self.screen_btn, self.cam_btn,
+                    self.record_btn, self.doc_btn):
             btn.setEnabled(enabled)
+
+    # ------------------------------------------------------------------ #
+    # טעינת מסמך
+    # ------------------------------------------------------------------ #
+    def _load_document(self):
+        """בוחר מסמך, מחלץ טקסט, ושולח ל-Gemini כהקשר לשיחה."""
+        if not self.engine or not self.engine.is_running():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "בחר מסמך", "",
+            "מסמכים (*.pdf *.txt *.md *.csv);;כל הקבצים (*.*)"
+        )
+        if not path:
+            return
+        import documents
+        try:
+            text = documents.extract_text(path)
+        except Exception as e:
+            QMessageBox.warning(self, "שגיאה בקריאת המסמך", str(e))
+            return
+
+        name = os.path.basename(path)
+        prompt = (
+            f"המשתמש שיתף איתך מסמך בשם '{name}'. "
+            f"קרא אותו והיה מוכן לענות על שאלות לגביו בעברית.\n\n"
+            f"--- תוכן המסמך ---\n{text}"
+        )
+        if self.engine.send_text(prompt):
+            self._turns.append(["doc", f"📄 נטען מסמך: {name}"])
+            self._render_transcript()
+            self.status_label.setText(f"✓ המסמך '{name}' נטען — אפשר לשאול עליו")
+        else:
+            self.status_label.setText("שליחת המסמך נכשלה")
 
     # ------------------------------------------------------------------ #
     # הקלטה
@@ -1021,6 +1088,13 @@ class VoiceApp(QMainWindow):
         }
         html = [f'<div style="color:{Palette.TEXT};">']
         for speaker, text in self._turns:
+            if speaker == "doc":
+                # הערת מערכת ממורכזת (טעינת מסמך)
+                html.append(
+                    f'<div style="margin:6px 0; text-align:center; '
+                    f'color:{Palette.ACCENT}; font-size:12px;">{text}</div>'
+                )
+                continue
             label, color = meta.get(speaker, (speaker, Palette.TEXT))
             html.append(
                 f'<div style="margin:0 0 14px 0;">'
@@ -1093,7 +1167,7 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(link)
 
         self.field = QLineEdit()
-        self.field.setPlaceholderText("הדבק כאן את המפתח (מתחיל ב-AIza...)")
+        self.field.setPlaceholderText("הדבק כאן את מפתח ה-API שהעתקת")
         self.field.setStyleSheet(f"""
             QLineEdit {{ background: {Palette.CARD}; color: {Palette.TEXT};
                          border: 1px solid {Palette.CARD_BORDER};

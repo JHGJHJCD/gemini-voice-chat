@@ -92,6 +92,8 @@ class VoiceEngine:
         input_device: int | None = None,
         output_device: int | None = None,
         system_instruction: str | None = None,
+        web_search: bool = False,
+        deep_thinking: bool = False,
         on_status: Optional[Callable[[str], None]] = None,
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
@@ -104,6 +106,8 @@ class VoiceEngine:
         self.output_device = output_device    # אינדקס רמקול/אוזניות
         # הנחיית מערכת - אם לא סופקה, ברירת המחדל
         self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
+        self.web_search = web_search        # כלי חיפוש Google
+        self.deep_thinking = deep_thinking  # מצב חשיבה מורחב
         self.on_status = on_status or (lambda s: None)
         self.on_user_text = on_user_text or (lambda t: None)
         self.on_bot_text = on_bot_text or (lambda t: None)
@@ -116,6 +120,7 @@ class VoiceEngine:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._tasks: list[asyncio.Task] = []
         self._reconnect_attempts = 0
+        self._session = None
 
         # תורים בטוחי-thread בין callbacks של sounddevice ל-asyncio
         self._mic_queue: "queue.Queue[bytes]" = queue.Queue()
@@ -175,6 +180,23 @@ class VoiceEngine:
         נקרא מ-thread ה-UI. None = הפסקת שליחת וידאו.
         """
         self._video_frame = jpeg
+
+    def send_text(self, text: str) -> bool:
+        """
+        שולח טקסט ל-Gemini באמצע שיחה (למשל תוכן מסמך).
+        נקרא מ-thread ה-UI; מתזמן את השליחה ב-event loop של המנוע.
+        """
+        if not self._running or not self._loop or not self._session:
+            return False
+        try:
+            coro = self._session.send_client_content(
+                turns={"role": "user", "parts": [{"text": text}]},
+                turn_complete=True,
+            )
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+            return True
+        except Exception:
+            return False
 
     # ================================================================== #
     # הקלטת השיחה
@@ -324,6 +346,14 @@ class VoiceEngine:
             "input_audio_transcription": {},
             "output_audio_transcription": {},
         }
+
+        # כלי חיפוש Google - תשובות עדכניות מהאינטרנט
+        if self.web_search:
+            config["tools"] = [{"google_search": {}}]
+
+        # חשיבה מעמיקה - Gemini חושב לפני שעונה (איטי אך מדויק יותר)
+        if self.deep_thinking:
+            config["thinking_config"] = types.ThinkingConfig(thinking_budget=2048)
 
         try:
             async with client.aio.live.connect(model=MODEL, config=config) as session:
