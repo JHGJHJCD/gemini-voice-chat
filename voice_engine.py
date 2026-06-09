@@ -63,6 +63,10 @@ SYSTEM_INSTRUCTION = (
 # מספר ניסיונות חיבור-מחדש אוטומטיים לפני ויתור
 MAX_RECONNECT = 5
 
+# סף עוצמת קול (0..1) לזיהוי התפרצות בזמן דיכוי הד.
+# קול חזק מעל הסף בזמן ש-Gemini מדבר = המשתמש רוצה להפריע.
+BARGE_IN_LEVEL = 0.22
+
 
 class _FatalError(Exception):
     """שגיאה שאין טעם לנסות אחריה שוב (מפתח שגוי, SSL)."""
@@ -113,6 +117,7 @@ class VoiceEngine:
         # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
         self.echo_suppression = True
         self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
+        self._barge_in_until = 0.0          # עד מתי חלון התפרצות פתוח
         self.on_status = on_status or (lambda s: None)
         self.on_user_text = on_user_text or (lambda t: None)
         self.on_bot_text = on_bot_text or (lambda t: None)
@@ -499,13 +504,21 @@ class VoiceEngine:
                 self.on_level(0.0)
                 continue
 
-            # דיכוי הד - אם Gemini מדבר כרגע (השמיע אודיו לאחרונה),
-            # לא שולחים את המיקרופון כדי שלא יקלוט את עצמו.
-            # חלון של 200ms אחרי ההשמעה האחרונה כדי לתפוס את ה'זנב'.
+            # דיכוי הד חכם - בזמן ש-Gemini מדבר חוסמים את ההד החלש,
+            # אבל מאפשרים לקול חזק לעבור (התפרצות / barge-in).
+            # כשמזוהה קול רם, נפתח חלון קצר שבו המיקרופון עובר,
+            # כך ש-Gemini "שומע" את ההפרעה ומפסיק לדבר.
             if self.echo_suppression and \
                     (time.monotonic() - self._last_output_time) < 0.2:
-                self.on_level(0.0)
-                continue
+                lvl = self._rms_level(data)
+                if lvl >= BARGE_IN_LEVEL:
+                    # קול רם = ניסיון התפרצות, פותחים חלון
+                    self._barge_in_until = time.monotonic() + 1.2
+                if time.monotonic() >= self._barge_in_until:
+                    # אין התפרצות פעילה - חוסמים את ההד
+                    self.on_level(0.0)
+                    continue
+                # אחרת - נותנים לקול לעבור (המשך ההתפרצות)
 
             # עוצמת קול המשתמש - לאנימציה
             self.on_level(self._rms_level(data))

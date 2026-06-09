@@ -319,7 +319,8 @@ class SettingsDialog(QDialog):
         self.echo_chk.setChecked(self.settings.echo_suppression)
         layout.addWidget(self.echo_chk)
 
-        echo_note = QLabel("    כבה רק אם אתה משתמש באוזניות (אז אפשר להפריע ל-Gemini תוך כדי דיבור)")
+        echo_note = QLabel("    כדי להפריע ל-Gemini תוך כדי שהוא מדבר — פשוט דבר בקול רם. "
+                           "(עם אוזניות אפשר לכבות לחלוטין)")
         echo_note.setWordWrap(True)
         echo_note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
         layout.addWidget(echo_note)
