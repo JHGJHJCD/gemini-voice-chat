@@ -23,17 +23,18 @@ voice_app.py
 import os
 import sys
 import math
+import time
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QPointF, QRectF
 from PyQt6.QtGui import (
     QFont, QPixmap, QShortcut, QKeySequence, QIcon,
-    QPainter, QColor, QRadialGradient, QPen,
+    QPainter, QColor, QRadialGradient, QPen, QAction,
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
     QComboBox, QFormLayout, QDialogButtonBox, QFrame, QFileDialog, QLineEdit,
-    QCheckBox,
+    QCheckBox, QSystemTrayIcon, QMenu,
 )
 
 from qt_material import apply_stylesheet
@@ -85,6 +86,8 @@ class EngineSignals(QObject):
     bot_text = pyqtSignal(str)
     error = pyqtSignal(str)
     level = pyqtSignal(float)
+    hotkey = pyqtSignal()           # קיצור גלובלי נלחץ
+    update_found = pyqtSignal(str)  # נמצאה גרסה חדשה (tag)
 
 
 STATUS_DISPLAY = {
@@ -498,8 +501,16 @@ class VoiceApp(QMainWindow):
         self.signals.bot_text.connect(self._on_bot_text)
         self.signals.error.connect(self._on_error)
         self.signals.level.connect(self._on_level)
+        self.signals.hotkey.connect(self.toggle_conversation)
+        self.signals.update_found.connect(self._on_update_found)
 
         self._turns: list[list[str]] = []
+
+        # מעקב שימוש
+        self.usage = config.Usage.load()
+        self._session_start = 0.0
+        self._tray: QSystemTrayIcon | None = None
+        self._force_quit = False
 
         # אנימציית פעימה לנקודת הסטטוס (תחושת "חי")
         self._pulse_phase = 0.0
@@ -523,6 +534,11 @@ class VoiceApp(QMainWindow):
         # קיצור מקלדת: רווח להתחלה/עצירה
         shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         shortcut.activated.connect(self.toggle_conversation)
+
+        # שלב 1: מגש מערכת, קיצור גלובלי, בדיקת עדכון
+        self._setup_tray()
+        self._setup_global_hotkey()
+        self._check_updates_async()
 
     # ------------------------------------------------------------------ #
     # בניית הממשק
@@ -688,11 +704,20 @@ class VoiceApp(QMainWindow):
         self.orb_label.setStyleSheet(f"color: {Palette.TEXT};")
         root.addWidget(self.orb_label)
 
-        hint = QLabel("מקש רווח להתחלה/עצירה · אפשר להפריע ל-Gemini באמצע")
+        hk = self.settings.global_hotkey.replace("+", "+").upper()
+        hint = QLabel(f"רווח להתחלה/עצירה · {hk} מכל מקום · ניתן להפריע באמצע")
         hint.setFont(QFont("Segoe UI", 9))
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setStyleSheet(f"color: {Palette.TEXT_MUTED};")
         root.addWidget(hint)
+
+        # תווית מעקב שימוש
+        self.usage_label = QLabel("")
+        self.usage_label.setFont(QFont("Segoe UI", 9))
+        self.usage_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.usage_label.setStyleSheet(f"color: {Palette.TEXT_MUTED};")
+        root.addWidget(self.usage_label)
+        self._update_usage_label()
 
         self._update_media_enabled(False)
 
@@ -821,6 +846,7 @@ class VoiceApp(QMainWindow):
         )
         self.engine.set_echo_suppression(self.settings.echo_suppression)
         self.engine.start()
+        self._session_start = time.monotonic()   # מעקב שימוש
         self._style_stop_button()
         self._update_media_enabled(True)
 
@@ -837,9 +863,25 @@ class VoiceApp(QMainWindow):
         if self.engine:
             self.engine.stop()
             self.engine = None
+        # צבירת זמן השיחה למעקב השימוש
+        if self._session_start:
+            elapsed = time.monotonic() - self._session_start
+            if elapsed > 1:
+                self.usage.add_session(elapsed)
+            self._session_start = 0.0
+            self._update_usage_label()
         self._style_start_button()
         self._update_media_enabled(False)
         self._set_status("stopped")
+
+    def _update_usage_label(self):
+        """מעדכן את תווית השימוש המצטבר."""
+        mins = self.usage.total_minutes
+        cost = self.usage.estimated_cost
+        self.usage_label.setText(
+            f"שימוש מצטבר: {mins:.0f} דק׳ · {self.usage.session_count} שיחות "
+            f"· ~${cost:.2f}"
+        )
 
     def _update_media_enabled(self, enabled: bool):
         """מאפשר/חוסם את כפתורי המדיה לפי האם שיחה פעילה."""
@@ -1121,10 +1163,126 @@ class VoiceApp(QMainWindow):
         bar.setValue(bar.maximum())
 
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # מגש מערכת
+    # ------------------------------------------------------------------ #
+    def _setup_tray(self):
+        """יוצר אייקון במגש המערכת עם תפריט."""
+        icon_path = config.resource_path("app.png")
+        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip("שיחה קולית עם Gemini")
+
+        menu = QMenu()
+        act_show = QAction("הצג חלון", self)
+        act_show.triggered.connect(self._restore_window)
+        act_toggle = QAction("התחל / עצור שיחה", self)
+        act_toggle.triggered.connect(self.toggle_conversation)
+        act_quit = QAction("יציאה", self)
+        act_quit.triggered.connect(self._quit_app)
+        menu.addAction(act_show)
+        menu.addAction(act_toggle)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _on_tray_activated(self, reason):
+        # לחיצה כפולה על האייקון = הצגת החלון
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._restore_window()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self):
+        self._force_quit = True
+        self.close()
+
+    # ------------------------------------------------------------------ #
+    # קיצור מקלדת גלובלי
+    # ------------------------------------------------------------------ #
+    def _setup_global_hotkey(self):
+        """רושם קיצור גלובלי שמתחיל/עוצר שיחה מכל מקום."""
+        try:
+            import keyboard
+        except Exception:
+            return
+        combo = self.settings.global_hotkey or "ctrl+alt+space"
+        try:
+            # ה-callback רץ ב-thread נפרד - משדרים signal ל-thread הראשי
+            keyboard.add_hotkey(combo, lambda: self.signals.hotkey.emit())
+        except Exception:
+            pass  # אם הקיצור תפוס/לא חוקי - מתעלמים
+
+    # ------------------------------------------------------------------ #
+    # עדכון אוטומטי
+    # ------------------------------------------------------------------ #
+    def _check_updates_async(self):
+        """בודק ברקע אם יש גרסה חדשה ב-GitHub."""
+        import threading
+        threading.Thread(target=self._check_updates, daemon=True).start()
+
+    def _check_updates(self):
+        try:
+            import truststore  # כבר מוזרק, אך ליתר ביטחון
+            import requests
+            url = f"https://api.github.com/repos/{config.GITHUB_REPO}/releases/latest"
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                return
+            tag = r.json().get("tag_name", "").lstrip("v")
+            if tag and self._is_newer(tag, config.APP_VERSION):
+                self.signals.update_found.emit(tag)
+        except Exception:
+            pass  # בדיקת עדכון היא נחמדה-אם-אפשר
+
+    @staticmethod
+    def _is_newer(remote: str, local: str) -> bool:
+        """משווה גרסאות מספריות (1.6 > 1.5)."""
+        def parts(v):
+            return [int(x) for x in v.split(".") if x.isdigit()]
+        try:
+            return parts(remote) > parts(local)
+        except Exception:
+            return False
+
+    def _on_update_found(self, tag: str):
+        ans = QMessageBox.question(
+            self, "עדכון זמין",
+            f"קיימת גרסה חדשה ({tag}).\nלפתוח את דף ההורדה?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            import webbrowser
+            webbrowser.open(
+                f"https://github.com/{config.GITHUB_REPO}/releases/latest"
+            )
+
+    # ------------------------------------------------------------------ #
     def closeEvent(self, event):
+        # מזעור למגש במקום סגירה (אם מופעל ולא יציאה מפורשת)
+        if (self.settings.minimize_to_tray and self._tray
+                and not self._force_quit):
+            event.ignore()
+            self.hide()
+            self._tray.showMessage(
+                "ממשיך לרוץ ברקע",
+                "האפליקציה במגש המערכת. לחיצה כפולה לפתיחה.",
+                QSystemTrayIcon.MessageIcon.Information, 2500,
+            )
+            return
         self._stop_video()
         if self.engine:
             self.engine.stop()
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+        except Exception:
+            pass
         event.accept()
 
 

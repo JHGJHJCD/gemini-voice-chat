@@ -29,6 +29,10 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+APP_VERSION = "1.5"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
+GITHUB_REPO = "JHGJHJCD/gemini-voice-chat"
+
+
 def resource_path(name: str) -> str:
     """
     מחזיר נתיב לקובץ משאב מצורף (אייקון, לוגו) - שונה מקבצי משתמש.
@@ -224,6 +228,8 @@ class Settings:
     web_search: bool = False
     deep_thinking: bool = False
     echo_suppression: bool = True
+    global_hotkey: str = "ctrl+alt+space"   # קיצור גלובלי
+    minimize_to_tray: bool = True            # מזעור למגש במקום סגירה
 
     def save(self):
         try:
@@ -237,6 +243,8 @@ class Settings:
                     "web_search": self.web_search,
                     "deep_thinking": self.deep_thinking,
                     "echo_suppression": self.echo_suppression,
+                    "global_hotkey": self.global_hotkey,
+                    "minimize_to_tray": self.minimize_to_tray,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -255,6 +263,54 @@ class Settings:
                 web_search=data.get("web_search", False),
                 deep_thinking=data.get("deep_thinking", False),
                 echo_suppression=data.get("echo_suppression", True),
+                global_hotkey=data.get("global_hotkey", "ctrl+alt+space"),
+                minimize_to_tray=data.get("minimize_to_tray", True),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה
+
+
+# ---------------------------------------------------------------------- #
+# מעקב שימוש - זמן שיחה מצטבר (נשמר ב-usage.json)
+# ---------------------------------------------------------------------- #
+USAGE_FILE = os.path.join(app_dir(), "usage.json")
+
+# אומדן עלות גס לדקת שיחה קולית (USD) - מבוסס תמחור Gemini Live
+COST_PER_MINUTE = 0.015
+
+
+@dataclass
+class Usage:
+    total_seconds: float = 0.0
+    session_count: int = 0
+
+    def add_session(self, seconds: float):
+        self.total_seconds += seconds
+        self.session_count += 1
+        self.save()
+
+    @property
+    def total_minutes(self) -> float:
+        return self.total_seconds / 60.0
+
+    @property
+    def estimated_cost(self) -> float:
+        return self.total_minutes * COST_PER_MINUTE
+
+    def save(self):
+        try:
+            with open(USAGE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"total_seconds": self.total_seconds,
+                           "session_count": self.session_count}, f)
+        except Exception:
+            pass
+
+    @classmethod
+    def load(cls) -> "Usage":
+        try:
+            with open(USAGE_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            return cls(total_seconds=d.get("total_seconds", 0.0),
+                       session_count=d.get("session_count", 0))
+        except Exception:
+            return cls()
