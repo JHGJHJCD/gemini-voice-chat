@@ -759,12 +759,15 @@ class VoiceApp(QMainWindow):
         shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
         shortcut.activated.connect(self.toggle_conversation)
 
-        # שלב 1: מגש מערכת, קיצור גלובלי, בדיקת עדכון
-        self._setup_tray()
+        # קיצור גלובלי + בדיקת עדכון
         self._setup_global_hotkey()
         self._check_updates_async()
-        # שלב 3: מילת הפעלה
+        # מילת הפעלה
         self._setup_wake_word()
+
+        # בפעם הראשונה - בקש בחירת תכונות
+        if not self.settings.features_configured:
+            self._show_features_setup()
 
     # ------------------------------------------------------------------ #
     # בניית הממשק
@@ -1014,6 +1017,11 @@ class VoiceApp(QMainWindow):
                 self.status_label.setText(f"הקול ישתנה ל{v.hebrew_name} בשיחה הבאה")
             # עדכון מילת ההפעלה לפי ההגדרות החדשות
             self._setup_wake_word()
+
+    def _show_features_setup(self):
+        """בפעם הראשונה - בקש מהמשתמש לבחור תכונות"""
+        dialog = FeaturesDialog(self.settings, self)
+        dialog.exec()
 
     def open_instruction(self):
         if InstructionDialog(self.settings, self).exec():
@@ -1679,6 +1687,98 @@ class ApiKeyDialog(QDialog):
         except Exception:
             pass  # גם אם השמירה נכשלה, נמשיך עם המפתח בזיכרון
         self.api_key = key
+        self.accept()
+
+
+# ====================================================================== #
+# דיאלוג בחירת תכונות — בפעם הראשונה
+# ====================================================================== #
+class FeaturesDialog(QDialog):
+    def __init__(self, settings: config.Settings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("בחר תכונות")
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setMinimumWidth(500)
+        self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        heading = QLabel("בחר אילו תכונות להפעיל:")
+        heading.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        heading.setStyleSheet(f"color: {Palette.TEXT};")
+        layout.addWidget(heading)
+
+        chk_style = f"""
+            QCheckBox {{ color: {Palette.TEXT}; font-size: 12px; spacing: 8px; }}
+            QCheckBox::indicator {{ width: 18px; height: 18px; border-radius: 4px;
+                                    border: 1px solid {Palette.CARD_BORDER};
+                                    background: {Palette.CARD}; }}
+            QCheckBox::indicator:checked {{ background: {Palette.ACCENT};
+                                            border-color: {Palette.ACCENT}; }}
+        """
+
+        self.web_search_chk = QCheckBox("🔍 חיפוש באינטרנט — תשובות עדכניות מ-Google")
+        self.web_search_chk.setStyleSheet(chk_style)
+        self.web_search_chk.setChecked(self.settings.web_search)
+        layout.addWidget(self.web_search_chk)
+
+        self.deep_thinking_chk = QCheckBox("🧠 מחשבה עמוקה — ניתוח מורחב בקול ארוך")
+        self.deep_thinking_chk.setStyleSheet(chk_style)
+        self.deep_thinking_chk.setChecked(self.settings.deep_thinking)
+        layout.addWidget(self.deep_thinking_chk)
+
+        self.computer_control_chk = QCheckBox("🖥️ שליטה במחשב — פתח אפליקציות בקול")
+        self.computer_control_chk.setStyleSheet(chk_style)
+        self.computer_control_chk.setChecked(self.settings.computer_control)
+        layout.addWidget(self.computer_control_chk)
+
+        self.echo_suppression_chk = QCheckBox("🔊 דיכוי הד — עזור להתפרץ בקול רם")
+        self.echo_suppression_chk.setStyleSheet(chk_style)
+        self.echo_suppression_chk.setChecked(self.settings.echo_suppression)
+        layout.addWidget(self.echo_suppression_chk)
+
+        self.memory_chk = QCheckBox("🧩 זיכרון בין שיחות — Gemini יזכור שיחות קודמות")
+        self.memory_chk.setStyleSheet(chk_style)
+        self.memory_chk.setChecked(self.settings.memory_enabled)
+        layout.addWidget(self.memory_chk)
+
+        self.wake_word_chk = QCheckBox("🗣️ מילת הפעלה — התחל שיחה בקול")
+        self.wake_word_chk.setStyleSheet(chk_style)
+        self.wake_word_chk.setChecked(self.settings.wake_word_enabled)
+        layout.addWidget(self.wake_word_chk)
+
+        layout.addSpacing(12)
+        note = QLabel("אתה יכול לשנות הגדרות אלה בכל עת בהגדרות ⚙️")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
+        layout.addWidget(note)
+
+        layout.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("תחל!")
+        ok_btn.setStyleSheet(
+            f"background: {Palette.ACCENT}; color: #00282e; font-weight: bold; "
+            f"padding: 8px 22px; border-radius: 8px;"
+        )
+        buttons.accepted.connect(self._save)
+        layout.addWidget(buttons)
+
+    def _save(self):
+        self.settings.web_search = self.web_search_chk.isChecked()
+        self.settings.deep_thinking = self.deep_thinking_chk.isChecked()
+        self.settings.computer_control = self.computer_control_chk.isChecked()
+        self.settings.echo_suppression = self.echo_suppression_chk.isChecked()
+        self.settings.memory_enabled = self.memory_chk.isChecked()
+        self.settings.wake_word_enabled = self.wake_word_chk.isChecked()
+        self.settings.features_configured = True
+        self.settings.save()
         self.accept()
 
 
