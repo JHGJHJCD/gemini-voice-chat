@@ -742,7 +742,11 @@ class VoiceApp(QMainWindow):
         self.setWindowTitle("שיחה קולית עם Gemini")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(700, 880)  # הרחבה עבור עברית (RTL)
-        self.setStyleSheet(f"QMainWindow {{ background: {Palette.BG}; }}")
+        # ודא רקע קצוני - תקן חלון לבן
+        self.setStyleSheet(f"""
+            QMainWindow {{ background: {Palette.BG}; }}
+            QWidget {{ background: {Palette.BG}; color: {Palette.TEXT}; }}
+        """)
 
         # אייקון החלון (סרגל משימות + כותרת)
         icon_path = config.resource_path("app.png")
@@ -769,6 +773,7 @@ class VoiceApp(QMainWindow):
         central = QWidget()
         # רקע גרדיאנט עדין - תחושה פרימיום
         central.setObjectName("central")
+        central.setAutoFillBackground(True)  # תקן: אל תתן לאפליקציה להסתיר את הרקע
         central.setStyleSheet(f"""
             QWidget#central {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
