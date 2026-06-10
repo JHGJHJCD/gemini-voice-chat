@@ -373,6 +373,17 @@ class SettingsDialog(QDialog):
         note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         layout.addWidget(note)
 
+        # כפתור הסרה (אדום, בתחתית)
+        layout.addSpacing(12)
+        uninstall_btn = QPushButton("🗑️  הסר את התוכנה מהמחשב")
+        uninstall_btn.setStyleSheet(
+            f"background: #c62828; color: white; font-weight: bold; "
+            f"padding: 8px 16px; border-radius: 6px; font-size: 12px;"
+        )
+        uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        uninstall_btn.clicked.connect(self._uninstall)
+        layout.addWidget(uninstall_btn)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -405,6 +416,40 @@ class SettingsDialog(QDialog):
         self.settings.picovoice_key = self.pico_field.text().strip()
         self.settings.save()
         self.accept()
+
+    def _uninstall(self):
+        """הסר את התוכנה מהמחשב"""
+        reply = QMessageBox.warning(
+            self,
+            "הסר את התוכנה",
+            "הא תרצה להסיר את 'שיחה קולית עם Gemini' מהמחשב?\n\n"
+            "פעולה זו:\n"
+            "✓ מוחקת את התוכנה וקבצי הליבה\n"
+            "⚠️ משמרת את הגדרותיך ומסמכיך (רשות)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            import subprocess
+            import sys
+            # הרץ את ה-uninstaller
+            uninstaller = os.path.join(config.app_dir(), "unins000.exe")
+            if os.path.exists(uninstaller):
+                try:
+                    subprocess.Popen([uninstaller, "/SILENT"])
+                    # סגור את התוכנה
+                    sys.exit(0)
+                except Exception as e:
+                    QMessageBox.critical(self, "שגיאה", f"לא הצליח להרים את ה-uninstaller: {e}")
+            else:
+                QMessageBox.information(
+                    self,
+                    "הסרה",
+                    "כדי להסיר את התוכנה:\n"
+                    "הגדרות → אפליקציות → תוכניות מותקנות\n"
+                    "חפש 'שיחה קולית עם Gemini' ולחץ הסר"
+                )
 
 
 # ====================================================================== #

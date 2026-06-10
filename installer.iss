@@ -27,6 +27,9 @@ SolidCompression=yes
 WizardStyle=modern
 ; אם יש קובץ אייקון לאשף
 DisableWelcomePage=no
+; הסרה אוטומטית של גרסה קודמת
+UninstallDisplayIcon={app}\{#AppExe}
+UsePreviousAppDir=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -58,3 +61,32 @@ Filename: "{app}\{#AppExe}"; Description: "הפעל את {#AppName} עכשיו";
 [UninstallRun]
 ; הסרת התעודה בעת הסרת התוכנה
 Filename: "certutil.exe"; Parameters: "-user -delstore Root ""Gemini Voice Chat"""; Flags: runhidden; RunOnceId: "DelCert"
+
+[Code]
+function InitializeSetup: Boolean;
+var
+  OldAppPath: string;
+  OldUninstaller: string;
+  ResultCode: Integer;
+begin
+  { בדוק אם קיימת גרסה ישנה והסר אותה אוטומטית }
+  OldAppPath := ExpandConstant('{localappdata}\Programs\GeminiVoiceChat');
+  OldUninstaller := OldAppPath + '\unins000.exe';
+
+  { אם קיים uninstaller ישן - הרץ אותו בשקט }
+  if FileExists(OldUninstaller) then
+  begin
+    if Exec(OldUninstaller, '/SILENT', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      { המתן לסיום הסרה }
+      Sleep(2000);
+    end;
+    { מחק את התיקייה אם עדיין קיימת }
+    if DirExists(OldAppPath) then
+    begin
+      DelTree(OldAppPath, True, True, True);
+    end;
+  end;
+
+  Result := True;
+end;
