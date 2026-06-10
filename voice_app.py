@@ -206,7 +206,7 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.setWindowTitle("הגדרות")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)  # הרחבה עבור RTL עברית
         self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
         self._build_ui()
 
@@ -463,7 +463,7 @@ class KnowledgeDialog(QDialog):
         self.memory = memory
         self.setWindowTitle("בסיס ידע וזיכרון")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumSize(480, 420)
+        self.setMinimumSize(540, 440)  # הרחבה עבור RTL עברית
         self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
         self._build_ui()
 
@@ -741,7 +741,7 @@ class VoiceApp(QMainWindow):
 
         self.setWindowTitle("שיחה קולית עם Gemini")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.resize(620, 860)
+        self.resize(700, 880)  # הרחבה עבור עברית (RTL)
         self.setStyleSheet(f"QMainWindow {{ background: {Palette.BG}; }}")
 
         # אייקון החלון (סרגל משימות + כותרת)
@@ -1605,7 +1605,7 @@ class ApiKeyDialog(QDialog):
         self.api_key = ""
         self.setWindowTitle("הגדרת מפתח API")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)  # הרחבה עבור RTL עברית
         self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
         self._build_ui()
 
