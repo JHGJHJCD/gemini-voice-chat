@@ -28,7 +28,6 @@ WizardStyle=modern
 ; אם יש קובץ אייקון לאשף
 DisableWelcomePage=no
 ; הסרה אוטומטית של גרסה קודמת
-UninstallDisplayIcon={app}\{#AppExe}
 UsePreviousAppDir=yes
 
 [Languages]
