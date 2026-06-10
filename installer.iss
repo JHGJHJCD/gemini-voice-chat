@@ -3,7 +3,7 @@
 ; הפלט:       installer_output\GeminiVoiceChat-Setup.exe
 
 #define AppName "שיחה קולית עם Gemini"
-#define AppVersion "1.4"
+#define AppVersion "1.5"
 #define AppPublisher "Yehuda"
 #define AppExe "GeminiVoiceChat.exe"
 
