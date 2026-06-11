@@ -99,6 +99,12 @@ class VoiceEngine:
         web_search: bool = False,
         deep_thinking: bool = False,
         computer_control: bool = False,
+        affective_dialog: bool = True,
+        proactive_audio: bool = False,
+        thinking_level: str = "minimal",
+        silence_duration_ms: int = 800,
+        start_speech_sensitivity: str = "MEDIUM",
+        end_speech_sensitivity: str = "MEDIUM",
         on_status: Optional[Callable[[str], None]] = None,
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
@@ -109,11 +115,16 @@ class VoiceEngine:
         self.voice_name = voice_name          # קול Gemini (Aoede, Kore...)
         self.input_device = input_device      # אינדקס מיקרופון (None=ברירת מחדל)
         self.output_device = output_device    # אינדקס רמקול/אוזניות
-        # הנחיית מערכת - אם לא סופקה, ברירת המחדל
         self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
         self.web_search = web_search        # כלי חיפוש Google
         self.deep_thinking = deep_thinking  # מצב חשיבה מורחב
         self.computer_control = computer_control  # פתיחת תוכנות/אתרים בקול
+        self.affective_dialog = affective_dialog
+        self.proactive_audio = proactive_audio
+        self.thinking_level = thinking_level
+        self.silence_duration_ms = silence_duration_ms
+        self.start_speech_sensitivity = start_speech_sensitivity
+        self.end_speech_sensitivity = end_speech_sensitivity
         # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
         self.echo_suppression = True
         self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
@@ -343,12 +354,27 @@ class VoiceEngine:
     async def _session_main(self):
         """מנהל את החיבור ל-Gemini ואת כל המשימות המקבילות."""
         self.on_status("connecting")
-        client = genai.Client(api_key=self.api_key)
+        # v1alpha נדרש רק לדיאלוג רגשי / אודיו פרואקטיבי
+        client_kwargs = {"api_key": self.api_key}
+        if self.affective_dialog or self.proactive_audio:
+            client_kwargs["http_options"] = {"api_version": "v1alpha"}
+        client = genai.Client(**client_kwargs)
+
+        # מיפוי רגישות VAD
+        sensitivity_map = {
+            "LOW": types.StartSensitivity.START_SENSITIVITY_LOW,
+            "MEDIUM": types.StartSensitivity.START_SENSITIVITY_MEDIUM,
+            "HIGH": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        }
+        end_sensitivity_map = {
+            "LOW": types.EndSensitivity.END_SENSITIVITY_LOW,
+            "MEDIUM": types.EndSensitivity.END_SENSITIVITY_MEDIUM,
+            "HIGH": types.EndSensitivity.END_SENSITIVITY_HIGH,
+        }
 
         config = {
             "response_modalities": ["AUDIO"],
             "system_instruction": self.system_instruction,
-            # בחירת הקול של Gemini
             "speech_config": types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -356,12 +382,31 @@ class VoiceEngine:
                     )
                 )
             ),
-            # תמלול אוטומטי - כדי להציג טקסט בממשק
             "input_audio_transcription": {},
             "output_audio_transcription": {},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "start_of_speech_sensitivity": sensitivity_map.get(
+                        self.start_speech_sensitivity,
+                        types.StartSensitivity.START_SENSITIVITY_MEDIUM),
+                    "end_of_speech_sensitivity": end_sensitivity_map.get(
+                        self.end_speech_sensitivity,
+                        types.EndSensitivity.END_SENSITIVITY_MEDIUM),
+                    "prefix_padding_ms": 20,
+                    "silence_duration_ms": self.silence_duration_ms,
+                }
+            },
         }
 
-        # כלים: חיפוש Google + שליטה במחשב (function calling)
+        # דיאלוג רגשי - מתאים תגובה לטון המשתמש
+        if self.affective_dialog:
+            config["enable_affective_dialog"] = True
+
+        # אודיו פרואקטיבי - לא עונה כשלא צריך
+        if self.proactive_audio:
+            config["proactivity"] = {"proactive_audio": True}
+
+        # כלים: חיפוש Google + שליטה במחשב
         tools = []
         if self.web_search:
             tools.append({"google_search": {}})
@@ -372,9 +417,12 @@ class VoiceEngine:
         if tools:
             config["tools"] = tools
 
-        # חשיבה מעמיקה - Gemini חושב לפני שעונה (איטי אך מדויק יותר)
+        # חשיבה - המודל 2.5 תומך ב-thinking_budget (לא thinking_level)
         if self.deep_thinking:
-            config["thinking_config"] = types.ThinkingConfig(thinking_budget=2048)
+            budget_map = {"minimal": 512, "low": 1024,
+                          "medium": 2048, "high": 4096}
+            config["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=budget_map.get(self.thinking_level, 2048))
 
         try:
             async with client.aio.live.connect(model=MODEL, config=config) as session:

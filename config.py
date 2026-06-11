@@ -234,6 +234,12 @@ class Settings:
     wake_word_enabled: bool = False          # מילת הפעלה
     picovoice_key: str = ""                  # מפתח Picovoice
     wake_keyword: str = "jarvis"             # מילת ההפעלה
+    affective_dialog: bool = True            # דיאלוג רגשי - מותאם לטון המשתמש
+    proactive_audio: bool = False            # אודיו פרואקטיבי - לא עונה כשלא רלוונטי (opt-in)
+    thinking_level: str = "minimal"          # רמת חשיבה: minimal/low/medium/high
+    silence_duration_ms: int = 800           # משך שקט לזיהוי סוף דיבור (ms)
+    start_speech_sensitivity: str = "MEDIUM" # רגישות זיהוי תחילת דיבור
+    end_speech_sensitivity: str = "MEDIUM"   # רגישות זיהוי סוף דיבור
     features_configured: bool = False        # בפעם ראשונה - בקש בחירת תכונות
 
     def save(self):
@@ -254,6 +260,12 @@ class Settings:
                     "wake_word_enabled": self.wake_word_enabled,
                     "picovoice_key": self.picovoice_key,
                     "wake_keyword": self.wake_keyword,
+                    "affective_dialog": self.affective_dialog,
+                    "proactive_audio": self.proactive_audio,
+                    "thinking_level": self.thinking_level,
+                    "silence_duration_ms": self.silence_duration_ms,
+                    "start_speech_sensitivity": self.start_speech_sensitivity,
+                    "end_speech_sensitivity": self.end_speech_sensitivity,
                     "features_configured": self.features_configured,
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -279,6 +291,12 @@ class Settings:
                 wake_word_enabled=data.get("wake_word_enabled", False),
                 picovoice_key=data.get("picovoice_key", ""),
                 wake_keyword=data.get("wake_keyword", "jarvis"),
+                affective_dialog=data.get("affective_dialog", True),
+                proactive_audio=data.get("proactive_audio", False),
+                thinking_level=data.get("thinking_level", "minimal"),
+                silence_duration_ms=data.get("silence_duration_ms", 800),
+                start_speech_sensitivity=data.get("start_speech_sensitivity", "MEDIUM"),
+                end_speech_sensitivity=data.get("end_speech_sensitivity", "MEDIUM"),
                 features_configured=data.get("features_configured", False),
             )
         except Exception:

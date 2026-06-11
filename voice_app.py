@@ -23,6 +23,7 @@ voice_app.py
 import os
 import sys
 import math
+import threading
 import time
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QPointF, QRectF
@@ -34,7 +35,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
     QComboBox, QFormLayout, QDialogButtonBox, QFrame, QFileDialog, QLineEdit,
-    QCheckBox, QSystemTrayIcon, QMenu,
+    QCheckBox, QScrollArea,
 )
 
 from qt_material import apply_stylesheet
@@ -206,9 +207,12 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.setWindowTitle("הגדרות")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(520)  # הרחבה עבור RTL עברית
+        self.setMinimumWidth(560)  # הרחבה עבור RTL עברית
         self.setStyleSheet(f"QDialog {{ background: {Palette.BG}; }}")
         self._build_ui()
+        # גובה מותאם למסך - שלא ייחתך במסכים נמוכים
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(580, min(720, scr.height() - 80))
 
     def _combo_style(self):
         return f"""
@@ -225,7 +229,19 @@ class SettingsDialog(QDialog):
         """
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        # כל התוכן בתוך אזור גלילה - שלא ייחתך במסכים נמוכים
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
 
@@ -309,6 +325,24 @@ class SettingsDialog(QDialog):
         self.think_chk.setChecked(self.settings.deep_thinking)
         layout.addWidget(self.think_chk)
 
+        # רמת חשיבה - פעיל רק כשחשיבה מעמיקה מסומנת
+        think_form = QFormLayout()
+        think_form.setSpacing(8)
+        self.thinking_combo = QComboBox()
+        self.thinking_combo.setStyleSheet(self._combo_style())
+        for level, desc in [("minimal", "מינימלי (מהיר)"), ("low", "נמוך"),
+                            ("medium", "בינוני"), ("high", "גבוה (מדויק)")]:
+            self.thinking_combo.addItem(desc, level)
+        idx = self.thinking_combo.findData(self.settings.thinking_level)
+        if idx >= 0:
+            self.thinking_combo.setCurrentIndex(idx)
+        self.thinking_combo.setEnabled(self.think_chk.isChecked())
+        self.think_chk.toggled.connect(self.thinking_combo.setEnabled)
+        lbl_think = QLabel("    רמת חשיבה:")
+        lbl_think.setStyleSheet(label_style)
+        think_form.addRow(lbl_think, self.thinking_combo)
+        layout.addLayout(think_form)
+
         self.control_chk = QCheckBox("🖱️  שליטה במחשב — פתיחת תוכנות, אתרים, פתקים בקול")
         self.control_chk.setStyleSheet(chk_style)
         self.control_chk.setChecked(self.settings.computer_control)
@@ -325,10 +359,73 @@ class SettingsDialog(QDialog):
         echo_note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
         layout.addWidget(echo_note)
 
+        # --- יכולות שיחה ---
+        conv_title = QLabel("יכולות שיחה")
+        conv_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        conv_title.setStyleSheet(f"color: {Palette.ACCENT}; margin-top: 8px;")
+        layout.addWidget(conv_title)
+
+        self.affective_chk = QCheckBox("🎭  דיאלוג רגשי — מתאים טון לפי ההבעה שלך")
+        self.affective_chk.setStyleSheet(chk_style)
+        self.affective_chk.setChecked(self.settings.affective_dialog)
+        layout.addWidget(self.affective_chk)
+
+        self.proactive_chk = QCheckBox("🤫  אודיו פרואקטיבי — לא עונה כשלא רלוונטי")
+        self.proactive_chk.setStyleSheet(chk_style)
+        self.proactive_chk.setChecked(self.settings.proactive_audio)
+        layout.addWidget(self.proactive_chk)
+
         self.memory_chk = QCheckBox("🧩  זיכרון בין שיחות — Gemini יזכור שיחות קודמות")
         self.memory_chk.setStyleSheet(chk_style)
         self.memory_chk.setChecked(self.settings.memory_enabled)
         layout.addWidget(self.memory_chk)
+
+        # --- כוונון זיהוי דיבור (VAD) ---
+        vad_title = QLabel("כוונון זיהוי דיבור")
+        vad_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        vad_title.setStyleSheet(f"color: {Palette.ACCENT}; margin-top: 8px;")
+        layout.addWidget(vad_title)
+
+        vad_form = QFormLayout()
+        vad_form.setSpacing(8)
+
+        self.silence_combo = QComboBox()
+        self.silence_combo.setStyleSheet(self._combo_style())
+        for ms, desc in [(300, "300ms (מהיר)"), (500, "500ms"), (800, "800ms (ברירת מחדל)"), (1200, "1200ms (סבלני)")]:
+            self.silence_combo.addItem(desc, ms)
+        idx = self.silence_combo.findData(self.settings.silence_duration_ms)
+        if idx < 0:  # ערך מותאם אישית - מוסיפים במקום לדרוס
+            self.silence_combo.addItem(f"{self.settings.silence_duration_ms}ms",
+                                       self.settings.silence_duration_ms)
+            idx = self.silence_combo.count() - 1
+        self.silence_combo.setCurrentIndex(idx)
+        lbl_silence = QLabel("שקט לזיהוי סוף דיבור:")
+        lbl_silence.setStyleSheet(label_style)
+        vad_form.addRow(lbl_silence, self.silence_combo)
+
+        self.start_sens_combo = QComboBox()
+        self.start_sens_combo.setStyleSheet(self._combo_style())
+        for val, desc in [("LOW", "נמוכה"), ("MEDIUM", "בינונית"), ("HIGH", "גבוהה")]:
+            self.start_sens_combo.addItem(desc, val)
+        idx = self.start_sens_combo.findData(self.settings.start_speech_sensitivity)
+        if idx >= 0:
+            self.start_sens_combo.setCurrentIndex(idx)
+        lbl_start = QLabel("רגישות תחילת דיבור:")
+        lbl_start.setStyleSheet(label_style)
+        vad_form.addRow(lbl_start, self.start_sens_combo)
+
+        self.end_sens_combo = QComboBox()
+        self.end_sens_combo.setStyleSheet(self._combo_style())
+        for val, desc in [("LOW", "נמוכה"), ("MEDIUM", "בינונית"), ("HIGH", "גבוהה")]:
+            self.end_sens_combo.addItem(desc, val)
+        idx = self.end_sens_combo.findData(self.settings.end_speech_sensitivity)
+        if idx >= 0:
+            self.end_sens_combo.setCurrentIndex(idx)
+        lbl_end = QLabel("רגישות סוף דיבור:")
+        lbl_end.setStyleSheet(label_style)
+        vad_form.addRow(lbl_end, self.end_sens_combo)
+
+        layout.addLayout(vad_form)
 
         # --- מילת הפעלה ---
         self.wake_chk = QCheckBox("🗣️  מילת הפעלה — התחל שיחה בקול ('Jarvis', 'Computer')")
@@ -414,6 +511,12 @@ class SettingsDialog(QDialog):
         self.settings.wake_word_enabled = self.wake_chk.isChecked()
         self.settings.wake_keyword = self.wake_combo.currentData()
         self.settings.picovoice_key = self.pico_field.text().strip()
+        self.settings.affective_dialog = self.affective_chk.isChecked()
+        self.settings.proactive_audio = self.proactive_chk.isChecked()
+        self.settings.thinking_level = self.thinking_combo.currentData()
+        self.settings.silence_duration_ms = self.silence_combo.currentData()
+        self.settings.start_speech_sensitivity = self.start_sens_combo.currentData()
+        self.settings.end_speech_sensitivity = self.end_sens_combo.currentData()
         self.settings.save()
         self.accept()
 
@@ -725,8 +828,6 @@ class VoiceApp(QMainWindow):
         # מעקב שימוש
         self.usage = config.Usage.load()
         self._session_start = 0.0
-        self._tray: QSystemTrayIcon | None = None
-        self._force_quit = False
 
         # זיכרון בין שיחות + בסיס ידע
         self.memory = knowledge.Memory.load()
@@ -1095,6 +1196,12 @@ class VoiceApp(QMainWindow):
             web_search=self.settings.web_search,
             deep_thinking=self.settings.deep_thinking,
             computer_control=self.settings.computer_control,
+            affective_dialog=self.settings.affective_dialog,
+            proactive_audio=self.settings.proactive_audio,
+            thinking_level=self.settings.thinking_level,
+            silence_duration_ms=self.settings.silence_duration_ms,
+            start_speech_sensitivity=self.settings.start_speech_sensitivity,
+            end_speech_sensitivity=self.settings.end_speech_sensitivity,
             on_status=self.signals.status.emit,
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,
@@ -1440,44 +1547,11 @@ class VoiceApp(QMainWindow):
         bar.setValue(bar.maximum())
 
     # ------------------------------------------------------------------ #
-    # ------------------------------------------------------------------ #
-    # מגש מערכת
-    # ------------------------------------------------------------------ #
-    def _setup_tray(self):
-        """יוצר אייקון במגש המערכת עם תפריט."""
-        icon_path = config.resource_path("app.png")
-        icon = QIcon(icon_path) if os.path.exists(icon_path) else self.windowIcon()
-        self._tray = QSystemTrayIcon(icon, self)
-        self._tray.setToolTip("שיחה קולית עם Gemini")
-
-        menu = QMenu()
-        act_show = QAction("הצג חלון", self)
-        act_show.triggered.connect(self._restore_window)
-        act_toggle = QAction("התחל / עצור שיחה", self)
-        act_toggle.triggered.connect(self.toggle_conversation)
-        act_quit = QAction("יציאה", self)
-        act_quit.triggered.connect(self._quit_app)
-        menu.addAction(act_show)
-        menu.addAction(act_toggle)
-        menu.addSeparator()
-        menu.addAction(act_quit)
-        self._tray.setContextMenu(menu)
-        self._tray.activated.connect(self._on_tray_activated)
-        self._tray.show()
-
-    def _on_tray_activated(self, reason):
-        # לחיצה כפולה על האייקון = הצגת החלון
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self._restore_window()
-
     def _restore_window(self):
+        """מציג ומקדם את החלון (מילת הפעלה / מופע שני)."""
         self.showNormal()
         self.raise_()
         self.activateWindow()
-
-    def _quit_app(self):
-        self._force_quit = True
-        self.close()
 
     # ------------------------------------------------------------------ #
     # קיצור מקלדת גלובלי
@@ -1575,27 +1649,28 @@ class VoiceApp(QMainWindow):
 
     # ------------------------------------------------------------------ #
     def closeEvent(self, event):
-        # מזעור למגש במקום סגירה (אם מופעל ולא יציאה מפורשת)
-        if (self.settings.minimize_to_tray and self._tray
-                and not self._force_quit):
-            event.ignore()
-            self.hide()
-            self._tray.showMessage(
-                "ממשיך לרוץ ברקע",
-                "האפליקציה במגש המערכת. לחיצה כפולה לפתיחה.",
-                QSystemTrayIcon.MessageIcon.Information, 2500,
-            )
-            return
-        self._stop_video()
-        self._stop_wake_word()
-        if self.engine:
-            self.engine.stop()
+        # failsafe: אם הסגירה תוקעת, תהרוג את התהליך אחרי 3 שניות
+        threading.Timer(3.0, lambda: os._exit(0)).start()
+        try:
+            self._stop_video()
+        except Exception:
+            pass
+        try:
+            self._stop_wake_word()
+        except Exception:
+            pass
+        try:
+            if self.engine:
+                self.engine.stop()
+        except Exception:
+            pass
         try:
             import keyboard
             keyboard.unhook_all_hotkeys()
         except Exception:
             pass
         event.accept()
+        os._exit(0)
 
 
 def _lighten(hex_color: str, factor: float = 1.18) -> str:
@@ -1747,6 +1822,16 @@ class FeaturesDialog(QDialog):
         self.memory_chk.setChecked(self.settings.memory_enabled)
         layout.addWidget(self.memory_chk)
 
+        self.affective_chk = QCheckBox("🎭 דיאלוג רגשי — מתאים טון לפי ההבעה שלך")
+        self.affective_chk.setStyleSheet(chk_style)
+        self.affective_chk.setChecked(self.settings.affective_dialog)
+        layout.addWidget(self.affective_chk)
+
+        self.proactive_chk = QCheckBox("🤫 אודיו פרואקטיבי — לא עונה כשלא צריך")
+        self.proactive_chk.setStyleSheet(chk_style)
+        self.proactive_chk.setChecked(self.settings.proactive_audio)
+        layout.addWidget(self.proactive_chk)
+
         self.wake_word_chk = QCheckBox("🗣️ מילת הפעלה — התחל שיחה בקול")
         self.wake_word_chk.setStyleSheet(chk_style)
         self.wake_word_chk.setChecked(self.settings.wake_word_enabled)
@@ -1777,6 +1862,8 @@ class FeaturesDialog(QDialog):
         self.settings.echo_suppression = self.echo_suppression_chk.isChecked()
         self.settings.memory_enabled = self.memory_chk.isChecked()
         self.settings.wake_word_enabled = self.wake_word_chk.isChecked()
+        self.settings.affective_dialog = self.affective_chk.isChecked()
+        self.settings.proactive_audio = self.proactive_chk.isChecked()
         self.settings.features_configured = True
         self.settings.save()
         self.accept()
