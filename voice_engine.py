@@ -360,15 +360,13 @@ class VoiceEngine:
             client_kwargs["http_options"] = {"api_version": "v1alpha"}
         client = genai.Client(**client_kwargs)
 
-        # מיפוי רגישות VAD
+        # מיפוי רגישות VAD - ב-SDK יש רק LOW/HIGH; MEDIUM = ברירת מחדל השרת
         sensitivity_map = {
             "LOW": types.StartSensitivity.START_SENSITIVITY_LOW,
-            "MEDIUM": types.StartSensitivity.START_SENSITIVITY_MEDIUM,
             "HIGH": types.StartSensitivity.START_SENSITIVITY_HIGH,
         }
         end_sensitivity_map = {
             "LOW": types.EndSensitivity.END_SENSITIVITY_LOW,
-            "MEDIUM": types.EndSensitivity.END_SENSITIVITY_MEDIUM,
             "HIGH": types.EndSensitivity.END_SENSITIVITY_HIGH,
         }
 
@@ -384,19 +382,20 @@ class VoiceEngine:
             ),
             "input_audio_transcription": {},
             "output_audio_transcription": {},
-            "realtime_input_config": {
-                "automatic_activity_detection": {
-                    "start_of_speech_sensitivity": sensitivity_map.get(
-                        self.start_speech_sensitivity,
-                        types.StartSensitivity.START_SENSITIVITY_MEDIUM),
-                    "end_of_speech_sensitivity": end_sensitivity_map.get(
-                        self.end_speech_sensitivity,
-                        types.EndSensitivity.END_SENSITIVITY_MEDIUM),
-                    "prefix_padding_ms": 20,
-                    "silence_duration_ms": self.silence_duration_ms,
-                }
-            },
         }
+
+        # כוונון זיהוי דיבור (VAD) - רגישות נשלחת רק אם LOW/HIGH
+        vad = {
+            "prefix_padding_ms": 20,
+            "silence_duration_ms": self.silence_duration_ms,
+        }
+        if self.start_speech_sensitivity in sensitivity_map:
+            vad["start_of_speech_sensitivity"] = \
+                sensitivity_map[self.start_speech_sensitivity]
+        if self.end_speech_sensitivity in end_sensitivity_map:
+            vad["end_of_speech_sensitivity"] = \
+                end_sensitivity_map[self.end_speech_sensitivity]
+        config["realtime_input_config"] = {"automatic_activity_detection": vad}
 
         # דיאלוג רגשי - מתאים תגובה לטון המשתמש
         if self.affective_dialog:
@@ -450,6 +449,10 @@ class VoiceEngine:
             # שגיאות קטלניות - אין טעם לנסות מחדש
             if "SSL" in err or "certificate" in err.lower():
                 raise _FatalError("בעיית אבטחה (SSL). בדוק את הגדרות נטפרי.")
+            if "expired" in err.lower():
+                raise _FatalError(
+                    "מפתח ה-API פג תוקף. צור מפתח חדש ב-aistudio.google.com/apikey "
+                    "והזן אותו בהגדרות.")
             if ("API key" in err or "API_KEY_INVALID" in err
                     or "403" in err or "401" in err):
                 raise _FatalError("מפתח API לא תקין.")

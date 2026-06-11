@@ -470,8 +470,19 @@ class SettingsDialog(QDialog):
         note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         layout.addWidget(note)
 
-        # כפתור הסרה (אדום, בתחתית)
+        # כפתור החלפת מפתח API
         layout.addSpacing(12)
+        key_btn = QPushButton("🔑  החלף מפתח API")
+        key_btn.setStyleSheet(
+            f"background: {Palette.CARD}; color: {Palette.TEXT}; "
+            f"border: 1px solid {Palette.CARD_BORDER}; "
+            f"padding: 8px 16px; border-radius: 6px; font-size: 12px;"
+        )
+        key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        key_btn.clicked.connect(self._change_api_key)
+        layout.addWidget(key_btn)
+
+        # כפתור הסרה (אדום, בתחתית)
         uninstall_btn = QPushButton("🗑️  הסר את התוכנה מהמחשב")
         uninstall_btn.setStyleSheet(
             f"background: #c62828; color: white; font-weight: bold; "
@@ -519,6 +530,17 @@ class SettingsDialog(QDialog):
         self.settings.end_speech_sensitivity = self.end_sens_combo.currentData()
         self.settings.save()
         self.accept()
+
+    def _change_api_key(self):
+        """פותח את דיאלוג המפתח ומעדכן את המפתח בתוכנה הרצה."""
+        dialog = ApiKeyDialog()
+        if dialog.exec() and dialog.api_key:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "api_key"):
+                parent.api_key = dialog.api_key
+            QMessageBox.information(
+                self, "מפתח עודכן",
+                "המפתח החדש נשמר וייכנס לתוקף בשיחה הבאה.")
 
     def _uninstall(self):
         """הסר את התוכנה מהמחשב"""
