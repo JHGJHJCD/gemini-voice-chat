@@ -17,6 +17,93 @@ import sounddevice as sd
 
 
 # ---------------------------------------------------------------------- #
+# כתיבה אטומית - כותבים לקובץ זמני ואז מחליפים. כך הקובץ לעולם לא נשאר
+# חצי-כתוב/משובש אם התוכנה נכבית/קורסת באמצע הכתיבה.
+# ---------------------------------------------------------------------- #
+def atomic_write_json(path: str, obj) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)   # החלפה אטומית
+
+
+# ---------------------------------------------------------------------- #
+# הצפנת מפתח ה-API במנוחה (Windows DPAPI - קשור לחשבון המשתמש).
+# כך המפתח (בתשלום!) לא יושב כטקסט גלוי ליד ה-exe. נפילה בטוחה לטקסט
+# אם ההצפנה נכשלת, ושדרוג אוטומטי של מפתח-טקסט קיים בטעינה הראשונה.
+# ---------------------------------------------------------------------- #
+import base64 as _base64
+
+_DPAPI_PREFIX = "DPAPI:"
+
+
+def _dpapi(func_name, stored_bytes):
+    """קורא ל-CryptProtectData/CryptUnprotectData דרך ctypes. מחזיר bytes או None."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD),
+                        ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+        fn = getattr(ctypes.windll.crypt32, func_name)
+        fn.argtypes = [ctypes.POINTER(_BLOB), wintypes.LPCWSTR,
+                       ctypes.POINTER(_BLOB), ctypes.c_void_p, ctypes.c_void_p,
+                       wintypes.DWORD, ctypes.POINTER(_BLOB)]
+        fn.restype = wintypes.BOOL
+
+        buf = ctypes.create_string_buffer(stored_bytes, len(stored_bytes))
+        blob_in = _BLOB(len(stored_bytes),
+                        ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        blob_out = _BLOB()
+        if not fn(ctypes.byref(blob_in), None, None, None, None, 0,
+                  ctypes.byref(blob_out)):
+            return None
+        out = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+        return out
+    except Exception:
+        return None
+
+
+def save_api_key(key: str) -> None:
+    key = (key or "").strip()
+    enc = _dpapi("CryptProtectData", key.encode("utf-8")) if key else None
+    if enc is not None:
+        content = _DPAPI_PREFIX + _base64.b64encode(enc).decode("ascii")
+    else:
+        content = key   # הצפנה נכשלה - שמירה כטקסט (לא גרוע מהמצב הקודם)
+    try:
+        with open(KEY_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception:
+        pass
+
+
+def load_api_key() -> str:
+    try:
+        with open(KEY_FILE, encoding="utf-8") as f:
+            content = f.read().strip()
+    except Exception:
+        return ""
+    if not content or "הדבק" in content:
+        return ""
+    if content.startswith(_DPAPI_PREFIX):
+        try:
+            raw = _base64.b64decode(content[len(_DPAPI_PREFIX):])
+        except Exception:
+            return ""
+        dec = _dpapi("CryptUnprotectData", raw)
+        return dec.decode("utf-8") if dec else ""
+    # טקסט פשוט (גרסה ישנה) - מחזירים ומשדרגים אוטומטית לקובץ מוצפן
+    save_api_key(content)
+    return content
+
+
+# ---------------------------------------------------------------------- #
 # תיקיית הבסיס - חשוב לעבודה תקינה גם כקובץ .exe (PyInstaller)
 # ---------------------------------------------------------------------- #
 def app_dir() -> str:
@@ -29,7 +116,7 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-APP_VERSION = "1.5"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
+APP_VERSION = "1.7"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
 GITHUB_REPO = "JHGJHJCD/gemini-voice-chat"
 
 
@@ -216,6 +303,7 @@ def list_output_devices() -> list[AudioDevice]:
 # שמירה/טעינה של הגדרות המשתמש
 # ---------------------------------------------------------------------- #
 SETTINGS_FILE = os.path.join(app_dir(), "settings.json")
+KEY_FILE = os.path.join(app_dir(), "api_key.txt")
 
 
 @dataclass
@@ -244,30 +332,29 @@ class Settings:
 
     def save(self):
         try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump({
-                    "voice_api": self.voice_api,
-                    "input_device": self.input_device,
-                    "output_device": self.output_device,
-                    "system_instruction": self.system_instruction,
-                    "theme": self.theme,
-                    "web_search": self.web_search,
-                    "deep_thinking": self.deep_thinking,
-                    "computer_control": self.computer_control,
-                    "echo_suppression": self.echo_suppression,
-                    "global_hotkey": self.global_hotkey,
-                    "memory_enabled": self.memory_enabled,
-                    "wake_word_enabled": self.wake_word_enabled,
-                    "picovoice_key": self.picovoice_key,
-                    "wake_keyword": self.wake_keyword,
-                    "affective_dialog": self.affective_dialog,
-                    "proactive_audio": self.proactive_audio,
-                    "thinking_level": self.thinking_level,
-                    "silence_duration_ms": self.silence_duration_ms,
-                    "start_speech_sensitivity": self.start_speech_sensitivity,
-                    "end_speech_sensitivity": self.end_speech_sensitivity,
-                    "features_configured": self.features_configured,
-                }, f, ensure_ascii=False, indent=2)
+            atomic_write_json(SETTINGS_FILE, {
+                "voice_api": self.voice_api,
+                "input_device": self.input_device,
+                "output_device": self.output_device,
+                "system_instruction": self.system_instruction,
+                "theme": self.theme,
+                "web_search": self.web_search,
+                "deep_thinking": self.deep_thinking,
+                "computer_control": self.computer_control,
+                "echo_suppression": self.echo_suppression,
+                "global_hotkey": self.global_hotkey,
+                "memory_enabled": self.memory_enabled,
+                "wake_word_enabled": self.wake_word_enabled,
+                "picovoice_key": self.picovoice_key,
+                "wake_keyword": self.wake_keyword,
+                "affective_dialog": self.affective_dialog,
+                "proactive_audio": self.proactive_audio,
+                "thinking_level": self.thinking_level,
+                "silence_duration_ms": self.silence_duration_ms,
+                "start_speech_sensitivity": self.start_speech_sensitivity,
+                "end_speech_sensitivity": self.end_speech_sensitivity,
+                "features_configured": self.features_configured,
+            })
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
 
@@ -332,9 +419,9 @@ class Usage:
 
     def save(self):
         try:
-            with open(USAGE_FILE, "w", encoding="utf-8") as f:
-                json.dump({"total_seconds": self.total_seconds,
-                           "session_count": self.session_count}, f)
+            atomic_write_json(USAGE_FILE, {
+                "total_seconds": self.total_seconds,
+                "session_count": self.session_count})
         except Exception:
             pass
 

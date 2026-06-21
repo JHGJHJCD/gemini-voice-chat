@@ -44,9 +44,8 @@ class Memory:
 
     def save(self):
         try:
-            with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.entries[-MAX_MEMORY_ENTRIES:], f,
-                          ensure_ascii=False, indent=2)
+            config.atomic_write_json(MEMORY_FILE,
+                                     self.entries[-MAX_MEMORY_ENTRIES:])
         except Exception:
             pass
 
@@ -97,8 +96,7 @@ class KnowledgeBase:
 
     def save(self):
         try:
-            with open(KNOWLEDGE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.docs, f, ensure_ascii=False, indent=2)
+            config.atomic_write_json(KNOWLEDGE_FILE, self.docs)
         except Exception:
             pass
 

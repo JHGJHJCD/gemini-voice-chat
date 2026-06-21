@@ -21,8 +21,15 @@ hiddenimports += collect_submodules("google.genai")
 hiddenimports += collect_submodules("PyQt6")
 hiddenimports += ["sounddevice", "mss", "pygetwindow", "cv2", "PIL", "pypdf",
                    "keyboard", "pvporcupine", "computer_tools", "wakeword",
-                   "knowledge", "documents", "truststore"]
+                   "knowledge", "documents", "truststore", "soundcard",
+                   "proctap", "psutil", "pycaw", "comtypes"]
+hiddenimports += collect_submodules("soundcard")
+hiddenimports += collect_submodules("proctap")
+hiddenimports += collect_submodules("pycaw")
+hiddenimports += collect_submodules("comtypes")
 datas += collect_data_files("pvporcupine")   # מודלים של מילות הפעלה
+datas += collect_data_files("soundcard")     # קבצי CFFI של soundcard
+datas += collect_data_files("proctap")       # התוסף ה-native של proc-tap
 
 a = Analysis(
     ["voice_app.py"],

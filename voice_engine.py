@@ -25,6 +25,7 @@ voice_engine.py
 """
 
 import asyncio
+import os
 import queue
 import threading
 import time
@@ -54,10 +55,27 @@ FORMAT = "int16"       # 16-bit PCM
 # מודל אודיו ילידי - הקול הכי טבעי, תומך עברית
 MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
 
+# מודל תרגום חי ייעודי - תרגום סימולטני זורם בהשהיה נמוכה (תרגום וידאו)
+TRANSLATE_MODEL = "gemini-3.5-live-translate-preview"
+TRANSLATE_TARGET = "he"   # קוד שפת יעד (BCP-47) - עברית
+
 SYSTEM_INSTRUCTION = (
     "אתה עוזר קולי ידידותי שמדבר עברית בצורה טבעית וזורמת. "
     "דבר בקצרה ולעניין, כמו בשיחה אמיתית. "
     "אל תשתמש בסימני פיסוק מיוחדים או אימוג'ים בתשובות."
+)
+
+# הנחיה למצב תרגום וידאו - Gemini שומע את קול המערכת ומתרגם לעברית ברצף
+TRANSLATE_INSTRUCTION = (
+    "אתה מנוע תרגום בלבד - לא עוזר ולא בן שיח. "
+    "תפקידך היחיד: לתרגם לעברית את מה שנאמר בשפה זרה (אנגלית או אחרת) "
+    "ולומר בקול רק את התרגום. "
+    "אסור לך בשום אופן: לשאול שאלות, להציע עזרה, להסביר מילים, "
+    "להוסיף הערות, או לנהל שיחה. אתה אך ורק מתרגם. "
+    "אם אתה שומע דיבור בעברית - התעלם ממנו לחלוטין, אל תתרגם ואל תחזור עליו, "
+    "זה הקול שלך עצמך. "
+    "אם אתה לא בטוח מה נאמר, או שאתה שומע שקט/מוזיקה/רעש בלבד - שתוק לגמרי. "
+    "תרגם ברצף תוך כדי הדיבור."
 )
 
 # מספר ניסיונות חיבור-מחדש אוטומטיים לפני ויתור
@@ -105,6 +123,7 @@ class VoiceEngine:
         silence_duration_ms: int = 800,
         start_speech_sensitivity: str = "MEDIUM",
         end_speech_sensitivity: str = "MEDIUM",
+        capture_mode: str = "mic",
         on_status: Optional[Callable[[str], None]] = None,
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
@@ -115,7 +134,14 @@ class VoiceEngine:
         self.voice_name = voice_name          # קול Gemini (Aoede, Kore...)
         self.input_device = input_device      # אינדקס מיקרופון (None=ברירת מחדל)
         self.output_device = output_device    # אינדקס רמקול/אוזניות
-        self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
+        # במצב תרגום וידאו - הנחיית תרגום קבועה (מתעלמים מהנחיה שהועברה)
+        if capture_mode == "system":
+            self.system_instruction = TRANSLATE_INSTRUCTION
+            # תרגום דורש התנהגות דטרמיניסטית - בלי פטפוט רגשי
+            affective_dialog = False
+            proactive_audio = False
+        else:
+            self.system_instruction = system_instruction or SYSTEM_INSTRUCTION
         self.web_search = web_search        # כלי חיפוש Google
         self.deep_thinking = deep_thinking  # מצב חשיבה מורחב
         self.computer_control = computer_control  # פתיחת תוכנות/אתרים בקול
@@ -125,6 +151,16 @@ class VoiceEngine:
         self.silence_duration_ms = silence_duration_ms
         self.start_speech_sensitivity = start_speech_sensitivity
         self.end_speech_sensitivity = end_speech_sensitivity
+        # מצב לכידה: "mic" = מיקרופון רגיל, "system" = קול המערכת (תרגום וידאו)
+        self.capture_mode = capture_mode
+        self._loopback_thread: Optional[threading.Thread] = None
+        self._proctap = None              # לכידת דפדפן (proc-tap)
+        self._browser_capture = False     # True כשלוכדים דפדפן בלבד (אין משוב)
+        self._browser_rate = 48000
+        self._browser_channels = 2
+        self._browser_pid = None          # ה-PID שנלכד כרגע (ל-watchdog)
+        self._last_browser_audio = 0.0    # מתי הגיע אודיו אחרון מהדפדפן
+        self._watchdog_thread: Optional[threading.Thread] = None
         # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
         self.echo_suppression = True
         self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
@@ -352,23 +388,38 @@ class VoiceEngine:
                 await asyncio.sleep(min(2 * self._reconnect_attempts, 8))
 
     async def _session_main(self):
-        """מנהל את החיבור ל-Gemini ואת כל המשימות המקבילות."""
+        """
+        מנהל את החיבור ל-Gemini. שני המצבים (תרגום וידאו / שיחה רגילה)
+        חולקים את אותו מנגנון סשן (_run_session) - רק בניית ה-config שונה,
+        ומופרדת לשתי פונקציות נפרדות וברורות.
+        """
         self.on_status("connecting")
+        if self.capture_mode == "system":
+            client, model, config = self._build_translate_setup()
+        else:
+            client, model, config = self._build_conversation_setup()
+        await self._run_session(client, model, config)
+
+    def _build_translate_setup(self):
+        """מצב תרגום וידאו: מודל תרגום חי ייעודי (זורם, השהיה נמוכה)."""
+        client = genai.Client(api_key=self.api_key)
+        config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            translation_config=types.TranslationConfig(
+                target_language_code=TRANSLATE_TARGET,
+                echo_target_language=True,
+            ),
+        )
+        return client, TRANSLATE_MODEL, config
+
+    def _build_conversation_setup(self):
+        """מצב שיחה רגיל: קול, VAD, כלים, חשיבה, דיאלוג רגשי."""
         # v1alpha נדרש רק לדיאלוג רגשי / אודיו פרואקטיבי
         client_kwargs = {"api_key": self.api_key}
         if self.affective_dialog or self.proactive_audio:
             client_kwargs["http_options"] = {"api_version": "v1alpha"}
         client = genai.Client(**client_kwargs)
-
-        # מיפוי רגישות VAD - ב-SDK יש רק LOW/HIGH; MEDIUM = ברירת מחדל השרת
-        sensitivity_map = {
-            "LOW": types.StartSensitivity.START_SENSITIVITY_LOW,
-            "HIGH": types.StartSensitivity.START_SENSITIVITY_HIGH,
-        }
-        end_sensitivity_map = {
-            "LOW": types.EndSensitivity.END_SENSITIVITY_LOW,
-            "HIGH": types.EndSensitivity.END_SENSITIVITY_HIGH,
-        }
 
         config = {
             "response_modalities": ["AUDIO"],
@@ -385,6 +436,15 @@ class VoiceEngine:
         }
 
         # כוונון זיהוי דיבור (VAD) - רגישות נשלחת רק אם LOW/HIGH
+        # (ב-SDK יש רק LOW/HIGH; MEDIUM = ברירת מחדל השרת)
+        sensitivity_map = {
+            "LOW": types.StartSensitivity.START_SENSITIVITY_LOW,
+            "HIGH": types.StartSensitivity.START_SENSITIVITY_HIGH,
+        }
+        end_sensitivity_map = {
+            "LOW": types.EndSensitivity.END_SENSITIVITY_LOW,
+            "HIGH": types.EndSensitivity.END_SENSITIVITY_HIGH,
+        }
         vad = {
             "prefix_padding_ms": 20,
             "silence_duration_ms": self.silence_duration_ms,
@@ -397,11 +457,8 @@ class VoiceEngine:
                 end_sensitivity_map[self.end_speech_sensitivity]
         config["realtime_input_config"] = {"automatic_activity_detection": vad}
 
-        # דיאלוג רגשי - מתאים תגובה לטון המשתמש
         if self.affective_dialog:
             config["enable_affective_dialog"] = True
-
-        # אודיו פרואקטיבי - לא עונה כשלא צריך
         if self.proactive_audio:
             config["proactivity"] = {"proactive_audio": True}
 
@@ -423,8 +480,12 @@ class VoiceEngine:
             config["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=budget_map.get(self.thinking_level, 2048))
 
+        return client, MODEL, config
+
+    async def _run_session(self, client, model, config):
+        """מתחבר ל-Gemini, פותח זרמי אודיו, ומריץ את המשימות המקבילות."""
         try:
-            async with client.aio.live.connect(model=MODEL, config=config) as session:
+            async with client.aio.live.connect(model=model, config=config) as session:
                 self._session = session
                 self._open_audio_streams()
                 self.on_status("listening")
@@ -446,16 +507,25 @@ class VoiceEngine:
             pass  # כיבוי יזום - יציאה נקייה
         except Exception as e:
             err = str(e)
+            low = err.lower()
             # שגיאות קטלניות - אין טעם לנסות מחדש
-            if "SSL" in err or "certificate" in err.lower():
+            if "SSL" in err or "certificate" in low:
                 raise _FatalError("בעיית אבטחה (SSL). בדוק את הגדרות נטפרי.")
-            if "expired" in err.lower():
+            if "expired" in low:
                 raise _FatalError(
                     "מפתח ה-API פג תוקף. צור מפתח חדש ב-aistudio.google.com/apikey "
                     "והזן אותו בהגדרות.")
             if ("API key" in err or "API_KEY_INVALID" in err
                     or "403" in err or "401" in err):
                 raise _FatalError("מפתח API לא תקין.")
+            # מודל לא זמין/הוסר ע"י Google (מודלי preview משתנים) - כשל חינני
+            if ("not_found" in low or "not found" in low or "404" in err
+                    or "does not exist" in low or "is not supported" in low
+                    or "was not found" in low):
+                mode = "התרגום" if self.capture_mode == "system" else "השיחה"
+                raise _FatalError(
+                    f"מודל {mode} אינו זמין כרגע - ייתכן ש-Google עדכנה אותו. "
+                    "בדוק אם יש גרסה חדשה של האפליקציה (עזרה → בדוק עדכונים).")
             # שאר השגיאות (חיבור נפל) - נזרקות כדי שהעטיפה תתחבר מחדש
             raise
 
@@ -463,22 +533,26 @@ class VoiceEngine:
     # זרמי אודיו (sounddevice)
     # ------------------------------------------------------------------ #
     def _open_audio_streams(self):
-        """פותח את זרמי המיקרופון והרמקול עם callbacks."""
+        """פותח את זרמי הקלט (מיקרופון או קול-מערכת) והרמקול."""
 
-        # --- מיקרופון: callback דוחף bytes לתור ---
-        def mic_callback(indata, frames, time_info, status):
-            if self._running:
-                self._mic_queue.put(bytes(indata))
+        if self.capture_mode == "system":
+            # מצב תרגום וידאו - לוכדים את קול המערכת (loopback) במקום מיקרופון
+            self._start_loopback_capture()
+        else:
+            # --- מיקרופון: callback דוחף bytes לתור ---
+            def mic_callback(indata, frames, time_info, status):
+                if self._running:
+                    self._mic_queue.put(bytes(indata))
 
-        self._in_stream = sd.RawInputStream(
-            samplerate=SEND_RATE,
-            channels=CHANNELS,
-            dtype=FORMAT,
-            blocksize=BLOCK,
-            device=self.input_device,   # None = ברירת מחדל מערכת
-            callback=mic_callback,
-        )
-        self._in_stream.start()
+            self._in_stream = sd.RawInputStream(
+                samplerate=SEND_RATE,
+                channels=CHANNELS,
+                dtype=FORMAT,
+                blocksize=BLOCK,
+                device=self.input_device,   # None = ברירת מחדל מערכת
+                callback=mic_callback,
+            )
+            self._in_stream.start()
 
         # --- רמקול: callback מושך bytes מהתור ---
         def speaker_callback(outdata, frames, time_info, status):
@@ -515,6 +589,207 @@ class VoiceEngine:
         )
         self._out_stream.start()
 
+    _BROWSERS = ("chrome", "msedge", "firefox", "brave", "opera", "vivaldi")
+
+    @classmethod
+    def _find_browser_pid(cls):
+        """
+        מחזיר את ה-PID של תהליך הדפדפן ש*מנגן אודיו כרגע*.
+        עדיפות: session אודיו פעיל ששייך לדפדפן (זה התהליך שבאמת מייצר
+        קול - לרוב תהליך-בן). כך proc-tap לוכד בדיוק את מקור הקול.
+        """
+        # 1) דרך pycaw - התהליך עם session אודיו של דפדפן.
+        #    מעדיפים session *פעיל* (State==1) - זה שמנגן כרגע - על פני
+        #    לשונית שקטה/שפג תוקפה, אחרת עלולים ללכוד תהליך שלא מייצר קול.
+        try:
+            from pycaw.pycaw import AudioUtilities
+            active_pid = None
+            any_pid = None
+            for s in AudioUtilities.GetAllSessions():
+                if not s.Process:
+                    continue
+                try:
+                    nm = (s.Process.name() or "").lower().replace(".exe", "")
+                    pid = s.Process.pid
+                    state = s.State
+                except Exception:
+                    continue
+                if "webview" in nm or not any(b in nm for b in cls._BROWSERS):
+                    continue
+                if any_pid is None:
+                    any_pid = pid
+                if state == 1 and active_pid is None:   # AudioSessionStateActive
+                    active_pid = pid
+            if active_pid is not None:
+                return active_pid
+            if any_pid is not None:
+                return any_pid
+        except Exception:
+            pass
+        # 2) fallback - תהליך הדפדפן הראשי לפי psutil
+        try:
+            import psutil
+        except Exception:
+            return None
+        REAL = tuple(b + ".exe" for b in cls._BROWSERS)
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "ppid"]):
+            nm = (p.info.get("name") or "").lower()
+            if nm in REAL:
+                procs.append(p.info)
+        if not procs:
+            return None
+        from collections import Counter
+        best_name = Counter(p["name"].lower() for p in procs).most_common(1)[0][0]
+        family = [p for p in procs if p["name"].lower() == best_name]
+        pids = {p["pid"] for p in family}
+        roots = [p for p in family if p["ppid"] not in pids] or family
+        return roots[0]["pid"]
+
+    def _on_browser_audio(self, pcm: bytes, frames=None):
+        """callback מ-proc-tap: ממיר 48k stereo float32 -> 16k mono int16."""
+        if not self._running or not pcm:
+            return
+        try:
+            ch = max(1, self._browser_channels)
+            arr = np.frombuffer(pcm, dtype=np.float32)
+            if arr.size == 0:
+                return
+            # stereo -> mono (חיתוך שארית כדי ש-reshape לא יקרוס על פריים חלקי)
+            if ch >= 2:
+                n = (arr.size // ch) * ch
+                if not n:
+                    return
+                arr = arr[:n].reshape(-1, ch).mean(axis=1)
+            # דגימה-מחדש 48000 -> 16000 (ממוצע כל 3 דגימות, אנטי-aliasing גס)
+            if self._browser_rate == 48000:
+                n = (arr.size // 3) * 3
+                if n:
+                    arr = arr[:n].reshape(-1, 3).mean(axis=1)
+            elif self._browser_rate != SEND_RATE:
+                ratio = self._browser_rate / SEND_RATE
+                idx = (np.arange(int(arr.size / ratio)) * ratio).astype(np.int64)
+                arr = arr[idx] if idx.size else arr[:0]
+            pcm16 = (np.clip(arr, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+        except Exception:
+            return   # פריים פגום - מדלגים בלי להפיל את ה-thread של proc-tap
+        if pcm16:
+            self._last_browser_audio = time.monotonic()
+            self._mic_queue.put(pcm16)
+
+    def _attach_proctap(self, pid):
+        """יוצר ומפעיל לכידת proc-tap על PID נתון. מחזיר True בהצלחה."""
+        import proctap
+        cap = proctap.ProcessAudioCapture(pid=pid,
+                                          on_data=self._on_browser_audio)
+        fmt = cap.get_format()
+        self._browser_rate = int(fmt.get("sample_rate", 48000))
+        self._browser_channels = int(fmt.get("channels", 2))
+        cap.start()
+        self._proctap = cap
+        self._browser_pid = pid
+        self._browser_capture = True
+        self._last_browser_audio = time.monotonic()
+        return True
+
+    def _browser_watchdog(self):
+        """
+        מנטר את לכידת הדפדפן ומתאושש אם היא נעצרה בשקט: אם תהליך-האודיו
+        מת (Chrome אתחל את שירות האודיו / נסגרה לשונית), או שהאודיו נעצר
+        זמן רב ויש תהליך-דפדפן אחר שמנגן - מתחבר מחדש ל-PID הנכון.
+        ריצה בזמן שהסרטון מושהה (pid חי, אין אודיו) לא גורמת לחיבור-מחדש.
+        """
+        try:
+            import psutil
+        except Exception:
+            return
+        while self._running and self._browser_capture:
+            time.sleep(2.0)
+            if not (self._running and self._browser_capture):
+                break
+            try:
+                pid_alive = self._browser_pid and psutil.pid_exists(self._browser_pid)
+                stalled = (time.monotonic() - self._last_browser_audio) > 4.0
+                need_pid = None
+                if not pid_alive:
+                    need_pid = self._find_browser_pid()      # התהליך מת
+                elif stalled:
+                    cur = self._find_browser_pid()
+                    if cur and cur != self._browser_pid:     # האודיו עבר לתהליך אחר
+                        need_pid = cur
+                if need_pid:
+                    try:
+                        if self._proctap:
+                            self._proctap.stop(); self._proctap.close()
+                    except Exception:
+                        pass
+                    self._proctap = None
+                    self._attach_proctap(need_pid)
+            except Exception:
+                pass  # watchdog לא אמור להפיל את המנוע
+
+    def _start_loopback_capture(self):
+        """
+        לוכד את האודיו של *הדפדפן בלבד* (ברמת תהליך, proc-tap) ודוחף
+        ל-_mic_queue. כך Gemini לא שומע את התרגום של עצמו - אין לולאת
+        משוב, ואפשר לתרגם בו-זמנית בלי לעצור את הסרטון.
+        אם אין דפדפן/נכשל - נופלים חזרה ללכידת קול-המערכת (soundcard).
+        """
+        if self._loopback_thread and self._loopback_thread.is_alive():
+            return
+        if self._proctap is not None:
+            return
+
+        # ניסיון ראשי: לכידת הדפדפן בלבד (proc-tap)
+        try:
+            pid = self._find_browser_pid()
+            if pid is None:
+                raise RuntimeError("no-browser")
+            self._attach_proctap(pid)
+            # watchdog להתאוששות אוטומטית
+            self._watchdog_thread = threading.Thread(
+                target=self._browser_watchdog, daemon=True)
+            self._watchdog_thread.start()
+            return
+        except Exception as e:
+            self._browser_capture = False
+            if str(e) == "no-browser":
+                self.on_error(
+                    "לא נמצא דפדפן פתוח. פתח את הסרטון בדפדפן "
+                    "(Chrome/Edge/Firefox) ונסה שוב. בינתיים אתרגם את כל קול המערכת.")
+            else:
+                self.on_error(f"לכידת דפדפן נכשלה ({e}); עובר לקול-מערכת.")
+            # נפילה ללכידת קול-מערכת רגילה (soundcard)
+
+        def loopback_loop():
+            try:
+                import soundcard as sc
+            except Exception as e:
+                self.on_error(f"לכידת קול המערכת נכשלה: {e}")
+                return
+            while self._running:
+                try:
+                    spk = sc.default_speaker()
+                    mic = sc.get_microphone(spk.name, include_loopback=True)
+                    with mic.recorder(samplerate=SEND_RATE, channels=CHANNELS,
+                                      blocksize=BLOCK) as rec:
+                        while self._running:
+                            frames = rec.record(numframes=BLOCK)
+                            if frames.ndim > 1:
+                                frames = frames[:, 0]
+                            pcm = (np.clip(frames, -1.0, 1.0) * 32767).astype(
+                                np.int16).tobytes()
+                            if self._running:
+                                self._mic_queue.put(pcm)
+                except Exception:
+                    if not self._running:
+                        break
+                    time.sleep(0.3)
+
+        self._loopback_thread = threading.Thread(
+            target=loopback_loop, daemon=True)
+        self._loopback_thread.start()
+
     def _cleanup_audio(self):
         """סוגר את זרמי האודיו."""
         for stream in (self._in_stream, self._out_stream):
@@ -526,6 +801,16 @@ class VoiceEngine:
                     pass
         self._in_stream = None
         self._out_stream = None
+        # סגירת לכידת הדפדפן (proc-tap)
+        if self._proctap is not None:
+            try:
+                self._proctap.stop()
+                self._proctap.close()
+            except Exception:
+                pass
+            self._proctap = None
+        self._browser_capture = False
+        self._browser_pid = None
 
     def _clear_playback(self):
         """מרוקן את תור ההשמעה - לשימוש בעת הפרעה (barge-in)."""
@@ -553,6 +838,38 @@ class VoiceEngine:
             # אם מושתק - מרוקנים את התור אך לא שולחים ל-Gemini
             if self.mic_muted:
                 self.on_level(0.0)
+                continue
+
+            # מצב תרגום וידאו - מודל התרגום הייעודי מתרגם זרם רציף בעצמו,
+            # אז פשוט מזרימים את האודיו ברצף.
+            if self.capture_mode == "system":
+                # בלכידת דפדפן אין משוב (לא לוכדים את הקול שלנו). אבל בנתיב
+                # הגיבוי (קול-מערכת) כן - אז חוסמים שליחה בזמן ש-Gemini מדבר,
+                # אחרת המודל ישמע את העברית של עצמו ויהדהד אותה בלולאה.
+                if not self._browser_capture and \
+                        (time.monotonic() - self._last_output_time) < 0.5:
+                    self.on_level(0.0)
+                    continue
+                # השגת-קצב: אם נוצר פיגור (התור נערם), משמיטים אודיו ישן
+                # ושולחים רק את העדכני - כך התרגום נשאר חי ולא מפגר יותר ויותר.
+                if self._mic_queue.qsize() > 12:   # ~1.2s פיגור
+                    dropped = b""
+                    try:
+                        while self._mic_queue.qsize() > 3:
+                            dropped = self._mic_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    if dropped:
+                        data = dropped
+                self.on_level(self._rms_level(data))
+                try:
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=data,
+                                         mime_type="audio/pcm;rate=16000"))
+                except Exception:
+                    if self._running:
+                        raise
+                    break
                 continue
 
             # דיכוי הד חכם - בזמן ש-Gemini מדבר חוסמים את ההד החלש,

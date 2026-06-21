@@ -23,8 +23,10 @@ voice_app.py
 import os
 import sys
 import math
+import logging
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QPointF, QRectF
 from PyQt6.QtGui import (
@@ -57,14 +59,14 @@ def _darken(hex_color: str, factor: float = 0.72) -> str:
 
 
 class Palette:
-    BG = "#0f1416"
-    CARD = "#1a2327"
-    CARD_BORDER = "#2a3940"
-    TEXT = "#e8eef0"
-    TEXT_MUTED = "#7a8a90"
-    SUCCESS = "#66bb6a"
+    BG = "#0b1013"
+    CARD = "#151d22"
+    CARD_BORDER = "#243139"
+    TEXT = "#eaf1f3"
+    TEXT_MUTED = "#85979e"
+    SUCCESS = "#5cc46a"
     DANGER = "#ef5350"
-    WARNING = "#ffa726"
+    WARNING = "#ffb04d"
     # נקבעים לפי הערכה ב-apply_accent():
     ACCENT = "#26c6da"
     ACCENT_DARK = "#0095a8"
@@ -902,8 +904,8 @@ class VoiceApp(QMainWindow):
         central.setAutoFillBackground(True)  # תקן: אל תתן לאפליקציה להסתיר את הרקע
         central.setStyleSheet(f"""
             QWidget#central {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #16222a, stop:0.5 {Palette.BG}, stop:1 #0a0e10);
+                background: qlineargradient(x1:0, y1:0, x2:0.3, y2:1,
+                    stop:0 #13242b, stop:0.45 {Palette.BG}, stop:1 #070b0d);
             }}
         """)
         self.setCentralWidget(central)
@@ -980,6 +982,14 @@ class VoiceApp(QMainWindow):
         sl.addWidget(self.status_dot)
         sl.addWidget(self.status_label)
         sl.addStretch()
+        # חיווי לכידה מתמשך (פרטיות) - מראה בבירור מה נלכד כרגע
+        self.capture_badge = QLabel("")
+        self.capture_badge.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.capture_badge.setStyleSheet(
+            f"color: #fff; background: {Palette.DANGER}; "
+            f"border-radius: 9px; padding: 3px 10px;")
+        self.capture_badge.hide()
+        sl.addWidget(self.capture_badge)
         root.addWidget(status_card)
 
         # ====== תצוגה מקדימה של הווידאו (מוסתרת עד הפעלה) ======
@@ -1023,11 +1033,16 @@ class VoiceApp(QMainWindow):
         self.doc_btn = self._toggle_button("📄  מסמך", "טען מסמך ש-Gemini יקרא")
         self.doc_btn.setCheckable(False)   # פעולה חד-פעמית, לא toggle
         self.doc_btn.clicked.connect(self._load_document)
+        self.translate_btn = self._toggle_button(
+            "🎬  תרגום וידאו",
+            "מתרגם לעברית את קול המערכת (סרטון/וידאו שמתנגן במחשב)")
+        self.translate_btn.clicked.connect(self.toggle_translation)
         media_bar.addWidget(self.mute_btn)
         media_bar.addWidget(self.screen_btn)
         media_bar.addWidget(self.cam_btn)
         media_bar.addWidget(self.record_btn)
         media_bar.addWidget(self.doc_btn)
+        media_bar.addWidget(self.translate_btn)
         root.addLayout(media_bar)
 
         # בורר מקור וידאו (מוסתר עד שמפעילים מסך/מצלמה)
@@ -1193,7 +1208,15 @@ class VoiceApp(QMainWindow):
         else:
             self._start_conversation()
 
-    def _start_conversation(self):
+    def toggle_translation(self):
+        """מצב תרגום וידאו - לוכד את קול המערכת ומתרגם לעברית."""
+        if self.engine and self.engine.is_running():
+            self._stop_conversation()
+        else:
+            self._start_conversation(translate=True)
+
+    def _start_conversation(self, translate: bool = False):
+        self._translate_mode = translate
         self._turns = []
         self.transcript.clear()
         # הרכבת הנחיית המערכת עם זיכרון + בסיס ידע
@@ -1224,6 +1247,7 @@ class VoiceApp(QMainWindow):
             silence_duration_ms=self.settings.silence_duration_ms,
             start_speech_sensitivity=self.settings.start_speech_sensitivity,
             end_speech_sensitivity=self.settings.end_speech_sensitivity,
+            capture_mode=("system" if translate else "mic"),
             on_status=self.signals.status.emit,
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,
@@ -1236,6 +1260,12 @@ class VoiceApp(QMainWindow):
         self._session_start = time.monotonic()   # מעקב שימוש
         self._style_stop_button()
         self._update_media_enabled(True)
+        if translate:
+            # מצב תרגום וידאו - הכפתור מסומן, רמז ברור למשתמש
+            self.translate_btn.setChecked(True)
+            self.translate_btn.setEnabled(True)   # נשאר לחיץ כדי לעצור
+            self.orb_label.setText("🎬 מתרגם וידאו — לחץ לעצירה")
+        self._update_capture_indicator()
 
     def _stop_conversation(self):
         self._stop_video()
@@ -1250,23 +1280,15 @@ class VoiceApp(QMainWindow):
         if self.engine:
             self.engine.stop()
             self.engine = None
-        # שמירת השיחה לזיכרון (אם מופעל ויש תוכן)
-        if self.settings.memory_enabled:
-            real_turns = [t for t in self._turns if t[0] in ("user", "bot")]
-            if real_turns:
-                from PyQt6.QtCore import QDateTime
-                stamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm")
-                self.memory.add_conversation(real_turns, stamp)
-        # צבירת זמן השיחה למעקב השימוש
-        if self._session_start:
-            elapsed = time.monotonic() - self._session_start
-            if elapsed > 1:
-                self.usage.add_session(elapsed)
-            self._session_start = 0.0
-            self._update_usage_label()
+        # שמירת זיכרון + זמן שימוש (משותף עם סגירת החלון)
+        self._persist_session()
+        self._update_usage_label()
+        self.translate_btn.setChecked(False)
+        self._translate_mode = False
         self._style_start_button()
         self._update_media_enabled(False)
         self._set_status("stopped")
+        self._update_capture_indicator()
         self._setup_wake_word()   # חידוש האזנה למילת הפעלה
 
     def _update_usage_label(self):
@@ -1358,6 +1380,7 @@ class VoiceApp(QMainWindow):
         if self.engine:
             self.engine.set_muted(muted)
         self.mute_btn.setText("🔇  מושתק" if muted else "🎤  מיקרופון")
+        self._update_capture_indicator()
 
     # ------------------------------------------------------------------ #
     # וידאו (מסך / מצלמה)
@@ -1425,6 +1448,7 @@ class VoiceApp(QMainWindow):
         self.preview.show()
         self.preview.setText("טוען תצוגה…")
         self.video_timer.start()
+        self._update_capture_indicator()
 
     def _tick_video(self):
         """
@@ -1473,6 +1497,7 @@ class VoiceApp(QMainWindow):
             self.screen_btn.setChecked(False)
         if keep_button != "camera" and self.cam_btn.isChecked():
             self.cam_btn.setChecked(False)
+        self._update_capture_indicator()
 
     def _video_error(self, message: str, btn: QPushButton):
         btn.setChecked(False)
@@ -1502,6 +1527,26 @@ class VoiceApp(QMainWindow):
         else:
             self._pulse_timer.stop()
             self.status_dot.setStyleSheet(f"color: {color};")
+
+    def _update_capture_indicator(self):
+        """חיווי פרטיות מתמשך - מראה בבירור מה נלכד כרגע (אודיו/מסך/מצלמה)."""
+        if not (self.engine and self.engine.is_running()):
+            self.capture_badge.hide()
+            return
+        parts = []
+        if getattr(self, "_translate_mode", False):
+            parts.append("לוכד אודיו דפדפן")
+        elif not self.mute_btn.isChecked():
+            parts.append("מיקרופון")
+        if self.screen_btn.isChecked():
+            parts.append("מסך")
+        if self.cam_btn.isChecked():
+            parts.append("מצלמה")
+        if parts:
+            self.capture_badge.setText("⏺ " + " · ".join(parts))
+            self.capture_badge.show()
+        else:
+            self.capture_badge.hide()
 
     def _tick_pulse(self):
         """מאנפש את שקיפות נקודת הסטטוס בגל סינוס - תחושת 'חי'."""
@@ -1671,16 +1716,18 @@ class VoiceApp(QMainWindow):
 
     # ------------------------------------------------------------------ #
     def closeEvent(self, event):
-        # failsafe: אם הסגירה תוקעת, תהרוג את התהליך אחרי 3 שניות
+        # שמירת מצב השיחה (זיכרון + שימוש) לפני סגירה - גם אם נסגר באמצע שיחה
+        try:
+            self._persist_session()
+        except Exception:
+            pass
+        # failsafe: אם הסגירה תוקעת (thread תקוע), נהרוג את התהליך אחרי 3ש'
         threading.Timer(3.0, lambda: os._exit(0)).start()
-        try:
-            self._stop_video()
-        except Exception:
-            pass
-        try:
-            self._stop_wake_word()
-        except Exception:
-            pass
+        for fn in (self._stop_video, self._stop_wake_word):
+            try:
+                fn()
+            except Exception:
+                pass
         try:
             if self.engine:
                 self.engine.stop()
@@ -1692,7 +1739,22 @@ class VoiceApp(QMainWindow):
         except Exception:
             pass
         event.accept()
-        os._exit(0)
+        # יציאה נקייה - מאפשר ל-Qt לשחרר משאבים. ה-failsafe למעלה יגבה אם ייתקע.
+        QApplication.instance().quit()
+
+    def _persist_session(self):
+        """שומר זיכרון שיחה + זמן שימוש (משותף לסגירה ולעצירת שיחה)."""
+        if self.settings.memory_enabled:
+            real_turns = [t for t in self._turns if t[0] in ("user", "bot")]
+            if real_turns:
+                from PyQt6.QtCore import QDateTime
+                stamp = QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm")
+                self.memory.add_conversation(real_turns, stamp)
+        if self._session_start:
+            elapsed = time.monotonic() - self._session_start
+            if elapsed > 1:
+                self.usage.add_session(elapsed)
+            self._session_start = 0.0
 
 
 def _lighten(hex_color: str, factor: float = 1.18) -> str:
@@ -1704,8 +1766,6 @@ def _lighten(hex_color: str, factor: float = 1.18) -> str:
 # ---------------------------------------------------------------------- #
 # אשף הגדרת מפתח - מוצג בהפעלה ראשונה כשאין מפתח
 # ---------------------------------------------------------------------- #
-KEY_FILE = os.path.join(config.app_dir(), "api_key.txt")
-
 
 class ApiKeyDialog(QDialog):
     """דיאלוג הדבקת מפתח API בהפעלה ראשונה."""
@@ -1777,12 +1837,8 @@ class ApiKeyDialog(QDialog):
         if len(key) < 20:
             self.error_label.setText("המפתח נראה קצר מדי. בדוק שהעתקת אותו במלואו.")
             return
-        # שמירה לקובץ כדי שלא יצטרכו להזין שוב
-        try:
-            with open(KEY_FILE, "w", encoding="utf-8") as f:
-                f.write(key)
-        except Exception:
-            pass  # גם אם השמירה נכשלה, נמשיך עם המפתח בזיכרון
+        # שמירה מוצפנת (DPAPI) כדי שלא יצטרכו להזין שוב
+        config.save_api_key(key)
         self.api_key = key
         self.accept()
 
@@ -1895,19 +1951,45 @@ def get_api_key() -> str:
     key = os.getenv("GEMINI_API_KEY")
     if key:
         return key
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE, encoding="utf-8") as f:
-            content = f.read().strip()
-            # מתעלמים מקובץ הדוגמה / ריק
-            if content and "הדבק" not in content:
-                return content
-    return ""
+    # טעינה מקובץ מוצפן (DPAPI); משדרג אוטומטית מפתח-טקסט ישן
+    return config.load_api_key()
 
 
 SINGLE_INSTANCE_NAME = "GeminiVoiceChat_SingleInstance"
 
 
+def _setup_logging():
+    """
+    לוג קבוע (מתגלגל) ליד האפליקציה + תפיסת חריגות לא-מטופלות מכל thread.
+    כך אם משהו נכשל אצל משתמש - יש log.txt לאבחון במקום קריסה שקטה.
+    """
+    try:
+        log_path = os.path.join(config.app_dir(), "log.txt")
+        handler = RotatingFileHandler(log_path, maxBytes=512 * 1024,
+                                      backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s [%(threadName)s] %(message)s"))
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
+        logging.info("==== הפעלה - גרסה %s ====", config.APP_VERSION)
+
+        def _excepthook(exc_type, exc, tb):
+            logging.error("חריגה לא-מטופלת", exc_info=(exc_type, exc, tb))
+            sys.__excepthook__(exc_type, exc, tb)
+        sys.excepthook = _excepthook
+
+        if hasattr(threading, "excepthook"):
+            def _thread_hook(args):
+                logging.error("חריגה לא-מטופלת ב-thread", exc_info=(
+                    args.exc_type, args.exc_value, args.exc_traceback))
+            threading.excepthook = _thread_hook
+    except Exception:
+        pass   # לוג הוא נחמד-אם-אפשר, לא יפיל את האפליקציה
+
+
 def main():
+    _setup_logging()
     app = QApplication(sys.argv)
 
     # ---- נעילת מופע יחיד ----
