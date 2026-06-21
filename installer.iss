@@ -27,11 +27,13 @@ SolidCompression=yes
 WizardStyle=modern
 ; אם יש קובץ אייקון לאשף
 DisableWelcomePage=no
+; שפה עברית בלבד - בלי דיאלוג בחירת שפה
+ShowLanguageDialog=no
 ; הסרה אוטומטית של גרסה קודמת
 UsePreviousAppDir=yes
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "צור קיצור דרך בשולחן העבודה"; GroupDescription: "קיצורי דרך:"
