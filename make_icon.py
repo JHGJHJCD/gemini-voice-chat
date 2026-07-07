@@ -1,93 +1,86 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-make_icon.py
-------------
-מייצר אייקון מותאם (app.ico) - מיקרופון מודרני על רקע גרדיאנט.
-הרצה חד-פעמית:  python make_icon.py
-"""
+"""make_icon.py - מייצר אייקון מרשים רב-רזולוציה (app.ico + app.png)."""
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
-from PIL import Image, ImageDraw
+S = 1024  # supersample
 
 
 def lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    return tuple(int(a[i] * (1 - t) + b[i] * t) for i in range(3))
 
 
-def make_icon(size: int) -> Image.Image:
-    # על-דגימה (4x) לקצוות חלקים
-    S = size * 4
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+# ---- רקע: גרדיאנט אלכסוני טורקיז->ציאן + זוהר רך ----
+yy, xx = np.mgrid[0:S, 0:S].astype(np.float32)
+t = (xx + yy) / (2.0 * S)
+c0 = np.array([14, 70, 84], np.float32)     # טורקיז עמוק
+c1 = np.array([46, 214, 236], np.float32)   # ציאן בהיר
+grad = c0[None, None, :] * (1 - t[..., None]) + c1[None, None, :] * t[..., None]
+r = np.sqrt((xx - S * 0.5) ** 2 + (yy - S * 0.30) ** 2) / (S * 0.62)
+glow = np.clip(1 - r, 0, 1)[..., None] * np.array([70, 70, 70], np.float32)
+grad = np.clip(grad + glow, 0, 255).astype(np.uint8)
+bg = Image.fromarray(grad, "RGB").convert("RGBA")
 
-    # --- רקע: ריבוע מעוגל עם גרדיאנט אנכי (ציאן כהה -> בהיר) ---
-    top = (14, 70, 90)       # ציאן כהה
-    bot = (38, 198, 218)     # ציאן בהיר (#26c6da)
-    radius = int(S * 0.22)
+mask = Image.new("L", (S, S), 0)
+ImageDraw.Draw(mask).rounded_rectangle([0, 0, S - 1, S - 1],
+                                       radius=int(S * 0.225), fill=255)
+icon = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+icon.paste(bg, (0, 0), mask)
 
-    # ציור הגרדיאנט שורה-שורה לתוך מסכה מעוגלת
-    grad = Image.new("RGBA", (S, S))
-    gd = ImageDraw.Draw(grad)
-    for y in range(S):
-        gd.line([(0, y), (S, y)], fill=lerp(top, bot, y / S) + (255,))
-    mask = Image.new("L", (S, S), 0)
-    md = ImageDraw.Draw(mask)
-    md.rounded_rectangle([0, 0, S, S], radius=radius, fill=255)
-    img.paste(grad, (0, 0), mask)
+cx = S / 2
+cap_w, cap_h = S * 0.215, S * 0.37
+left, right = cx - cap_w / 2, cx + cap_w / 2
+top = S * 0.205
+bottom = top + cap_h
+cap_center_y = top + cap_h * 0.42
+stroke = S * 0.032
 
-    # --- מיקרופון לבן במרכז ---
-    white = (255, 255, 255, 255)
-    cx = S // 2
+# ---- גלי קול עדינים משני הצדדים ----
+waves = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+wd = ImageDraw.Draw(waves)
+for i, rad in enumerate((cap_w * 0.95, cap_w * 1.45)):
+    a = int(150 - i * 55)
+    bb = [cx - rad, cap_center_y - rad, cx + rad, cap_center_y + rad]
+    wd.arc(bb, start=305, end=360, fill=(255, 255, 255, a), width=int(stroke * 0.85))
+    wd.arc(bb, start=0, end=55, fill=(255, 255, 255, a), width=int(stroke * 0.85))
+    wd.arc(bb, start=125, end=235, fill=(255, 255, 255, a), width=int(stroke * 0.85))
+icon = Image.alpha_composite(icon, waves)
 
-    # גוף המיקרופון (קפסולה)
-    mic_w = int(S * 0.26)
-    mic_top = int(S * 0.20)
-    mic_bot = int(S * 0.55)
-    d.rounded_rectangle(
-        [cx - mic_w // 2, mic_top, cx + mic_w // 2, mic_bot],
-        radius=mic_w // 2, fill=white,
-    )
+# ---- צל רך מתחת למיקרופון (עומק) ----
+shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+sd = ImageDraw.Draw(shadow)
+sd.rounded_rectangle([left, top, right, bottom], radius=cap_w / 2,
+                     fill=(0, 30, 40, 150))
+shadow = shadow.filter(ImageFilter.GaussianBlur(int(S * 0.018)))
+icon = Image.alpha_composite(icon, shadow)
 
-    # קשת ההחזקה (חצי עיגול פתוח מתחת לקפסולה)
-    arc_w = int(S * 0.40)
-    arc_top = int(S * 0.34)
-    arc_bot = int(S * 0.66)
-    line_w = max(int(S * 0.035), 2)
-    d.arc(
-        [cx - arc_w // 2, arc_top, cx + arc_w // 2, arc_bot],
-        start=20, end=160, fill=white, width=line_w,
-    )
+# ---- המיקרופון (לבן) + מעמד ----
+mic = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+md = ImageDraw.Draw(mic)
+md.rounded_rectangle([left, top, right, bottom], radius=cap_w / 2,
+                     fill=(255, 255, 255, 255))
+arc_bb = [cx - cap_w * 0.85, bottom - cap_w * 0.85,
+          cx + cap_w * 0.85, bottom + cap_w * 0.55]
+md.arc(arc_bb, start=15, end=165, fill=(255, 255, 255, 255), width=int(stroke))
+leg_top = bottom + cap_w * 0.55
+leg_bot = leg_top + S * 0.075
+md.line([cx, leg_top, cx, leg_bot], fill=(255, 255, 255, 255), width=int(stroke))
+md.line([cx - S * 0.085, leg_bot, cx + S * 0.085, leg_bot],
+        fill=(255, 255, 255, 255), width=int(stroke))
 
-    # רגל המיקרופון
-    stand_top = int(S * 0.66)
-    stand_bot = int(S * 0.76)
-    d.line([(cx, stand_top), (cx, stand_bot)], fill=white, width=line_w)
+# הברקה עליונה (גלוס) לתחושת עומק
+gloss = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+gd = ImageDraw.Draw(gloss)
+gd.ellipse([left + cap_w * 0.18, top + cap_h * 0.05,
+            right - cap_w * 0.18, top + cap_h * 0.40],
+           fill=(255, 255, 255, 80))
+gloss = gloss.filter(ImageFilter.GaussianBlur(int(S * 0.012)))
+mic = Image.alpha_composite(mic, gloss)
+icon = Image.alpha_composite(icon, mic)
 
-    # בסיס
-    base_w = int(S * 0.22)
-    base_y = int(S * 0.76)
-    d.line(
-        [(cx - base_w // 2, base_y), (cx + base_w // 2, base_y)],
-        fill=white, width=line_w,
-    )
-
-    # הקטנה לגודל הסופי (אנטי-aliasing)
-    return img.resize((size, size), Image.LANCZOS)
-
-
-def main():
-    sizes = [16, 24, 32, 48, 64, 128, 256]
-    images = [make_icon(s) for s in sizes]
-    # שמירה כ-.ico עם כל הגדלים
-    images[0].save(
-        "app.ico", format="ICO",
-        sizes=[(s, s) for s in sizes],
-        append_images=images[1:],
-    )
-    # שמירה גם כ-PNG לתצוגה בממשק
-    make_icon(256).save("app.png", format="PNG")
-    print("[OK] נוצרו app.ico ו-app.png")
-
-
-if __name__ == "__main__":
-    main()
+# ---- שמירה ----
+icon.resize((256, 256), Image.LANCZOS).save("app.png")
+sizes = [(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (24, 24), (16, 16)]
+icon.resize((256, 256), Image.LANCZOS).save("app.ico", sizes=sizes)
+print("saved app.png (256) + app.ico", [s[0] for s in sizes])

@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTextEdit, QPlainTextEdit, QMessageBox, QDialog,
     QComboBox, QFormLayout, QDialogButtonBox, QFrame, QFileDialog, QLineEdit,
-    QCheckBox, QScrollArea,
+    QCheckBox, QScrollArea, QProgressDialog,
 )
 
 from qt_material import apply_stylesheet
@@ -93,6 +93,10 @@ class EngineSignals(QObject):
     level = pyqtSignal(float)
     hotkey = pyqtSignal()           # קיצור גלובלי נלחץ
     update_found = pyqtSignal(str)  # נמצאה גרסה חדשה (tag)
+    no_update = pyqtSignal()        # אין עדכון (לבדיקה ידנית)
+    update_progress = pyqtSignal(int)   # אחוז הורדת העדכון
+    update_ready = pyqtSignal(str)      # העדכון הורד (נתיב ל-installer)
+    update_error = pyqtSignal(str)      # שגיאה בהורדת העדכון
     wake = pyqtSignal()             # מילת הפעלה זוהתה
 
 
@@ -472,14 +476,21 @@ class SettingsDialog(QDialog):
         note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 11px;")
         layout.addWidget(note)
 
-        # כפתור החלפת מפתח API
+        # כפתור בדיקת עדכונים
         layout.addSpacing(12)
-        key_btn = QPushButton("🔑  החלף מפתח API")
-        key_btn.setStyleSheet(
+        secondary_btn = (
             f"background: {Palette.CARD}; color: {Palette.TEXT}; "
             f"border: 1px solid {Palette.CARD_BORDER}; "
-            f"padding: 8px 16px; border-radius: 6px; font-size: 12px;"
-        )
+            f"padding: 8px 16px; border-radius: 6px; font-size: 12px;")
+        update_btn = QPushButton(f"🔄  בדוק עדכונים  (גרסה {config.APP_VERSION})")
+        update_btn.setStyleSheet(secondary_btn)
+        update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        update_btn.clicked.connect(self._check_updates)
+        layout.addWidget(update_btn)
+
+        # כפתור החלפת מפתח API
+        key_btn = QPushButton("🔑  החלף מפתח API")
+        key_btn.setStyleSheet(secondary_btn)
         key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         key_btn.clicked.connect(self._change_api_key)
         layout.addWidget(key_btn)
@@ -531,6 +542,13 @@ class SettingsDialog(QDialog):
         self.settings.start_speech_sensitivity = self.start_sens_combo.currentData()
         self.settings.end_speech_sensitivity = self.end_sens_combo.currentData()
         self.settings.save()
+        self.accept()
+
+    def _check_updates(self):
+        """מפעיל בדיקת עדכונים יזומה דרך החלון הראשי, וסוגר את ההגדרות."""
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "manual_check_update"):
+            parent.manual_check_update()
         self.accept()
 
     def _change_api_key(self):
@@ -844,7 +862,14 @@ class VoiceApp(QMainWindow):
         self.signals.level.connect(self._on_level)
         self.signals.hotkey.connect(self.toggle_conversation)
         self.signals.update_found.connect(self._on_update_found)
+        self.signals.no_update.connect(self._on_no_update)
+        self.signals.update_progress.connect(self._on_update_progress)
+        self.signals.update_ready.connect(self._on_update_ready)
+        self.signals.update_error.connect(self._on_update_error)
         self.signals.wake.connect(self._on_wake_detected)
+        self._update_url = ""          # קישור הורדה לעדכון (אם נמצא)
+        self._update_dlg = None        # דיאלוג התקדמות הורדה
+        self._update_cancelled = False
         self._wake_listener: WakeWordListener | None = None
 
         self._turns: list[list[str]] = []
@@ -873,8 +898,10 @@ class VoiceApp(QMainWindow):
             QWidget {{ background: {Palette.BG}; color: {Palette.TEXT}; }}
         """)
 
-        # אייקון החלון (סרגל משימות + כותרת)
-        icon_path = config.resource_path("app.png")
+        # אייקון החלון (סרגל משימות + כותרת) - מעדיפים ico רב-רזולוציה
+        icon_path = config.resource_path("app.ico")
+        if not os.path.exists(icon_path):
+            icon_path = config.resource_path("app.png")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -1673,24 +1700,41 @@ class VoiceApp(QMainWindow):
     # ------------------------------------------------------------------ #
     # עדכון אוטומטי
     # ------------------------------------------------------------------ #
-    def _check_updates_async(self):
+    def _check_updates_async(self, manual: bool = False):
         """בודק ברקע אם יש גרסה חדשה ב-GitHub."""
-        import threading
-        threading.Thread(target=self._check_updates, daemon=True).start()
+        threading.Thread(target=self._check_updates, args=(manual,),
+                         daemon=True).start()
 
-    def _check_updates(self):
+    def _check_updates(self, manual: bool = False):
         try:
             import truststore  # כבר מוזרק, אך ליתר ביטחון
             import requests
             url = f"https://api.github.com/repos/{config.GITHUB_REPO}/releases/latest"
             r = requests.get(url, timeout=8)
             if r.status_code != 200:
+                if manual:
+                    self.signals.update_error.emit("לא ניתן להגיע לשרת העדכונים.")
                 return
-            tag = r.json().get("tag_name", "").lstrip("v")
+            data = r.json()
+            tag = data.get("tag_name", "").lstrip("v")
             if tag and self._is_newer(tag, config.APP_VERSION):
+                # מאתרים את קובץ ההתקנה ברשימת ה-assets
+                self._update_url = ""
+                for a in data.get("assets", []):
+                    if a.get("name", "").lower().endswith(".exe"):
+                        self._update_url = a.get("browser_download_url", "")
+                        break
                 self.signals.update_found.emit(tag)
+            elif manual:
+                self.signals.no_update.emit()
         except Exception:
-            pass  # בדיקת עדכון היא נחמדה-אם-אפשר
+            if manual:
+                self.signals.update_error.emit("בדיקת העדכונים נכשלה.")
+
+    def manual_check_update(self):
+        """בדיקת עדכונים יזומה (מתוך ההגדרות)."""
+        self.status_label.setText("בודק עדכונים…")
+        self._check_updates_async(manual=True)
 
     @staticmethod
     def _is_newer(remote: str, local: str) -> bool:
@@ -1702,17 +1746,94 @@ class VoiceApp(QMainWindow):
         except Exception:
             return False
 
+    def _on_no_update(self):
+        self.status_label.setText(f"✓ אתה מעודכן (גרסה {config.APP_VERSION})")
+
     def _on_update_found(self, tag: str):
+        # אם אין קישור הורדה ישיר - נופלים לפתיחת הדפדפן
+        if not self._update_url:
+            ans = QMessageBox.question(
+                self, "עדכון זמין",
+                f"קיימת גרסה חדשה ({tag}).\nלפתוח את דף ההורדה?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans == QMessageBox.StandardButton.Yes:
+                import webbrowser
+                webbrowser.open(
+                    f"https://github.com/{config.GITHUB_REPO}/releases/latest")
+            return
         ans = QMessageBox.question(
             self, "עדכון זמין",
-            f"קיימת גרסה חדשה ({tag}).\nלפתוח את דף ההורדה?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
+            f"קיימת גרסה חדשה ({tag}).\n\n"
+            "להוריד ולהתקין עכשיו? התוכנה תיסגר, ההתקנה תרוץ אוטומטית, "
+            "והגרסה החדשה תיפתח.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ans == QMessageBox.StandardButton.Yes:
-            import webbrowser
-            webbrowser.open(
-                f"https://github.com/{config.GITHUB_REPO}/releases/latest"
-            )
+            self._start_update_download()
+
+    def _start_update_download(self):
+        self._update_cancelled = False
+        self._update_dlg = QProgressDialog(
+            "מוריד את העדכון…", "ביטול", 0, 100, self)
+        self._update_dlg.setWindowTitle("עדכון")
+        self._update_dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._update_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        self._update_dlg.setAutoClose(False)
+        self._update_dlg.setAutoReset(False)
+        self._update_dlg.canceled.connect(self._cancel_update)
+        self._update_dlg.show()
+        threading.Thread(target=self._download_update_worker, daemon=True).start()
+
+    def _cancel_update(self):
+        self._update_cancelled = True
+
+    def _download_update_worker(self):
+        try:
+            import requests, tempfile
+            dest = os.path.join(tempfile.gettempdir(),
+                                "GeminiVoiceChat-Setup.exe")
+            with requests.get(self._update_url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                done = 0
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_content(65536):
+                        if self._update_cancelled:
+                            return
+                        f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            self.signals.update_progress.emit(
+                                int(done * 100 / total))
+            self.signals.update_ready.emit(dest)
+        except Exception:
+            self.signals.update_error.emit("הורדת העדכון נכשלה.")
+
+    def _on_update_progress(self, pct: int):
+        if self._update_dlg:
+            self._update_dlg.setValue(pct)
+
+    def _on_update_error(self, msg: str):
+        if self._update_dlg:
+            self._update_dlg.close()
+            self._update_dlg = None
+        QMessageBox.warning(self, "עדכון", msg)
+
+    def _on_update_ready(self, path: str):
+        if self._update_dlg:
+            self._update_dlg.close()
+            self._update_dlg = None
+        import subprocess
+        try:
+            # משהים 2ש' (ping) כדי שהאפליקציה תספיק להיסגר לפני שההתקנה
+            # מנסה למחוק את הקבצים הנעולים, ואז מריצים את ה-installer.
+            subprocess.Popen(
+                f'ping 127.0.0.1 -n 3 >nul & "{path}"', shell=True)
+        except Exception:
+            QMessageBox.warning(self, "עדכון", "לא ניתן להפעיל את ההתקנה.")
+            return
+        # סגירה מסודרת כדי לשחרר את הקבצים עבור ההתקנה
+        self._persist_session()
+        os._exit(0)
 
     # ------------------------------------------------------------------ #
     def closeEvent(self, event):
@@ -1990,6 +2111,14 @@ def _setup_logging():
 
 def main():
     _setup_logging()
+    # מזהה אפליקציה ל-Windows - גורם לשורת המשימות להשתמש באייקון החלון
+    # (ולקבץ נכון) במקום אייקון פייתון גנרי / "דף לבן".
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "Yehuda.GeminiVoiceChat.1")
+    except Exception:
+        pass
     app = QApplication(sys.argv)
 
     # ---- נעילת מופע יחיד ----

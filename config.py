@@ -116,7 +116,7 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-APP_VERSION = "1.7"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
+APP_VERSION = "1.8"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
 GITHUB_REPO = "JHGJHJCD/gemini-voice-chat"
 
 
