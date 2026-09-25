@@ -21,7 +21,7 @@ hiddenimports += collect_submodules("google.genai")
 hiddenimports += collect_submodules("PyQt6")
 hiddenimports += ["sounddevice", "mss", "pygetwindow", "cv2", "PIL", "pypdf",
                    "keyboard", "pvporcupine", "computer_tools", "wakeword",
-                   "knowledge", "documents", "truststore", "soundcard",
+                   "knowledge", "documents", "truststore", "soundcard", "aec",
                    "proctap", "psutil", "pycaw", "comtypes"]
 hiddenimports += collect_submodules("soundcard")
 hiddenimports += collect_submodules("proctap")

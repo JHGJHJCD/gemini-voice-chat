@@ -37,3 +37,4 @@ installer_output/
 .DS_Store
 Thumbs.db
 *.log
+log.txt

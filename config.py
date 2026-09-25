@@ -116,7 +116,7 @@ def app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-APP_VERSION = "1.8"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
+APP_VERSION = "1.9"   # גרסת האפליקציה (להשוואה בעדכון אוטומטי)
 GITHUB_REPO = "JHGJHJCD/gemini-voice-chat"
 
 
@@ -329,6 +329,7 @@ class Settings:
     start_speech_sensitivity: str = "MEDIUM" # רגישות זיהוי תחילת דיבור
     end_speech_sensitivity: str = "MEDIUM"   # רגישות זיהוי סוף דיבור
     features_configured: bool = False        # בפעם ראשונה - בקש בחירת תכונות
+    model: str = "gemini-3.8-live"           # מודל השיחה (ראה voice_engine.MODELS)
 
     def save(self):
         try:
@@ -354,6 +355,7 @@ class Settings:
                 "start_speech_sensitivity": self.start_speech_sensitivity,
                 "end_speech_sensitivity": self.end_speech_sensitivity,
                 "features_configured": self.features_configured,
+                "model": self.model,
             })
         except Exception:
             pass  # שמירה היא נחמדה-אם-אפשר, לא קריטית
@@ -385,6 +387,7 @@ class Settings:
                 start_speech_sensitivity=data.get("start_speech_sensitivity", "MEDIUM"),
                 end_speech_sensitivity=data.get("end_speech_sensitivity", "MEDIUM"),
                 features_configured=data.get("features_configured", False),
+                model=data.get("model", "gemini-3.8-live"),
             )
         except Exception:
             return cls()  # ברירות מחדל אם אין קובץ / שגיאה

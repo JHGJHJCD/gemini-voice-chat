@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 
 from qt_material import apply_stylesheet
 
-from voice_engine import VoiceEngine
+from voice_engine import VoiceEngine, MODELS
 from media import ScreenCapturer, CameraCapturer
 import config
 import knowledge
@@ -305,6 +305,15 @@ class SettingsDialog(QDialog):
             self.theme_combo.setCurrentIndex(i)
         add_row("ערכת צבעים:", self.theme_combo)
 
+        # מודל השיחה (Gemini Live) - העדכני ביותר כברירת מחדל
+        self.model_combo = QComboBox()
+        for model_id, desc in MODELS.items():
+            self.model_combo.addItem(f"✨  {desc}", model_id)
+        i = self.model_combo.findData(self.settings.model)
+        if i >= 0:
+            self.model_combo.setCurrentIndex(i)
+        add_row("מודל Gemini:", self.model_combo)
+
         layout.addLayout(form)
 
         # --- כלים מתקדמים ---
@@ -354,13 +363,13 @@ class SettingsDialog(QDialog):
         self.control_chk.setChecked(self.settings.computer_control)
         layout.addWidget(self.control_chk)
 
-        self.echo_chk = QCheckBox("🔇  דיכוי הד — למניעת מצב ש-Gemini שומע את עצמו (לרמקולים)")
+        self.echo_chk = QCheckBox("🔇  ביטול הד — מוריד את קול Gemini מהמיקרופון, כדי שלא יענה לעצמו")
         self.echo_chk.setStyleSheet(chk_style)
         self.echo_chk.setChecked(self.settings.echo_suppression)
         layout.addWidget(self.echo_chk)
 
-        echo_note = QLabel("    כדי להפריע ל-Gemini תוך כדי שהוא מדבר — פשוט דבר בקול רם. "
-                           "(עם אוזניות אפשר לכבות לחלוטין)")
+        echo_note = QLabel("    עובד אוטומטית גם ברמקולים וגם באוזניות. אפשר להפריע ל-Gemini "
+                           "תוך כדי שהוא מדבר — פשוט להתחיל לדבר.")
         echo_note.setWordWrap(True)
         echo_note.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-size: 10px;")
         layout.addWidget(echo_note)
@@ -527,6 +536,7 @@ class SettingsDialog(QDialog):
         self.settings.input_device = self.input_combo.currentData()
         self.settings.output_device = self.output_combo.currentData()
         self.settings.theme = self.theme_combo.currentData()
+        self.settings.model = self.model_combo.currentData()
         self.settings.web_search = self.search_chk.isChecked()
         self.settings.deep_thinking = self.think_chk.isChecked()
         self.settings.computer_control = self.control_chk.isChecked()
@@ -1275,6 +1285,7 @@ class VoiceApp(QMainWindow):
             start_speech_sensitivity=self.settings.start_speech_sensitivity,
             end_speech_sensitivity=self.settings.end_speech_sensitivity,
             capture_mode=("system" if translate else "mic"),
+            model=self.settings.model,
             on_status=self.signals.status.emit,
             on_user_text=self.signals.user_text.emit,
             on_bot_text=self.signals.bot_text.emit,
@@ -2011,7 +2022,7 @@ class FeaturesDialog(QDialog):
         self.computer_control_chk.setChecked(self.settings.computer_control)
         layout.addWidget(self.computer_control_chk)
 
-        self.echo_suppression_chk = QCheckBox("🔊 דיכוי הד — עזור להתפרץ בקול רם")
+        self.echo_suppression_chk = QCheckBox("🔊 ביטול הד — Gemini לא ישמע את עצמו מהרמקולים")
         self.echo_suppression_chk.setStyleSheet(chk_style)
         self.echo_suppression_chk.setChecked(self.settings.echo_suppression)
         layout.addWidget(self.echo_suppression_chk)

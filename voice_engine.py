@@ -42,6 +42,8 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 
+import aec
+
 
 # ---------------------------------------------------------------------- #
 # קבועים - פורמט האודיו נקבע ע"י דרישות Gemini Live
@@ -52,8 +54,19 @@ CHANNELS = 1           # מונו
 BLOCK = 1600           # גודל בלוק מיקרופון (~100ms ב-16kHz)
 FORMAT = "int16"       # 16-bit PCM
 
-# מודל אודיו ילידי - הקול הכי טבעי, תומך עברית
-MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
+# מודלי שיחה (Live API). הראשון = ברירת מחדל. הסדר = שרשרת נפילה:
+# אם מודל לא זמין (Google מסירה/משנה מודלים) עוברים אוטומטית לבא בתור.
+#   gemini-3.8-live                    - המודל היציב (GA) העדכני, השהיה נמוכה
+#   gemini-3.8-live-extended-thinking  - אותו דור, עם חשיבה מורחבת (thinking_level)
+#   gemini-2.5-flash-native-audio-...  - הדור הקודם (preview), למקרה חירום
+MODELS = {
+    "gemini-3.8-live": "Gemini 3.8 Live — מהיר וטבעי (מומלץ)",
+    "gemini-3.8-live-extended-thinking": "Gemini 3.8 Live — חשיבה מורחבת (מדויק, איטי יותר)",
+    "gemini-2.5-flash-native-audio-preview-12-2025": "Gemini 2.5 (הדור הקודם)",
+}
+DEFAULT_MODEL = "gemini-3.8-live"
+MODEL = DEFAULT_MODEL   # תאימות לאחור
+MODEL_FALLBACK_CHAIN = list(MODELS.keys())
 
 # מודל תרגום חי ייעודי - תרגום סימולטני זורם בהשהיה נמוכה (תרגום וידאו)
 TRANSLATE_MODEL = "gemini-3.5-live-translate-preview"
@@ -91,6 +104,16 @@ class _FatalError(Exception):
     pass
 
 
+class _ModelUnavailable(Exception):
+    """המודל לא קיים/לא נתמך - אפשר לנסות את המודל הבא בשרשרת."""
+    pass
+
+
+class _ToolsUnsupported(Exception):
+    """המודל דחה את הכלים (חיפוש/פונקציות) - אפשר לנסות בלי כלים."""
+    pass
+
+
 class VoiceEngine:
     """
     מנוע שיחה קולית עם Gemini Live.
@@ -124,6 +147,7 @@ class VoiceEngine:
         start_speech_sensitivity: str = "MEDIUM",
         end_speech_sensitivity: str = "MEDIUM",
         capture_mode: str = "mic",
+        model: str = DEFAULT_MODEL,
         on_status: Optional[Callable[[str], None]] = None,
         on_user_text: Optional[Callable[[str], None]] = None,
         on_bot_text: Optional[Callable[[str], None]] = None,
@@ -153,6 +177,12 @@ class VoiceEngine:
         self.end_speech_sensitivity = end_speech_sensitivity
         # מצב לכידה: "mic" = מיקרופון רגיל, "system" = קול המערכת (תרגום וידאו)
         self.capture_mode = capture_mode
+        # מודל השיחה שנבחר בהגדרות (אם לא מוכר - ברירת המחדל)
+        self.model = model if model in MODELS else DEFAULT_MODEL
+        self._active_model = self.model     # המודל שבפועל מחובר (אחרי נפילה)
+        self._tools_disabled = False        # True אחרי שהמודל דחה את הכלים
+        # המשך אותה שיחה אחרי התחברות-מחדש (session resumption)
+        self._resume_handle: str | None = None
         self._loopback_thread: Optional[threading.Thread] = None
         self._proctap = None              # לכידת דפדפן (proc-tap)
         self._browser_capture = False     # True כשלוכדים דפדפן בלבד (אין משוב)
@@ -161,10 +191,11 @@ class VoiceEngine:
         self._browser_pid = None          # ה-PID שנלכד כרגע (ל-watchdog)
         self._last_browser_audio = 0.0    # מתי הגיע אודיו אחרון מהדפדפן
         self._watchdog_thread: Optional[threading.Thread] = None
-        # דיכוי הד - השתקת מיקרופון בזמן ש-Gemini מדבר (לרמקולים)
+        # ביטול הד - מסנן אדפטיבי שמוריד את קול Gemini מהמיקרופון (aec.py)
         self.echo_suppression = True
         self._last_output_time = 0.0        # מתי הושמע אודיו לאחרונה
-        self._barge_in_until = 0.0          # עד מתי חלון התפרצות פתוח
+        self._ref = aec.ReferenceBuffer(src_rate=RECV_RATE, dst_rate=SEND_RATE)
+        self._gate: aec.EchoGate | None = None   # נוצר מחדש בכל שיחה
         self.on_status = on_status or (lambda s: None)
         self.on_user_text = on_user_text or (lambda t: None)
         self.on_bot_text = on_bot_text or (lambda t: None)
@@ -232,8 +263,13 @@ class VoiceEngine:
         self.mic_muted = muted
 
     def set_echo_suppression(self, enabled: bool):
-        """מפעיל/מכבה דיכוי הד (השתקת מיק בזמן דיבור של Gemini)."""
+        """מפעיל/מכבה ביטול הד (הורדת קול Gemini מהמיקרופון)."""
         self.echo_suppression = enabled
+
+    @property
+    def active_model(self) -> str:
+        """המודל שמחובר בפועל (עשוי להיות שונה מהנבחר אחרי נפילה)."""
+        return self._active_model
 
     def set_video_frame(self, jpeg: bytes | None):
         """
@@ -396,9 +432,42 @@ class VoiceEngine:
         self.on_status("connecting")
         if self.capture_mode == "system":
             client, model, config = self._build_translate_setup()
-        else:
-            client, model, config = self._build_conversation_setup()
-        await self._run_session(client, model, config)
+            try:
+                await self._run_session(client, model, config)
+            except _ModelUnavailable:
+                raise _FatalError(
+                    "מודל התרגום אינו זמין כרגע - ייתכן ש-Google עדכנה אותו. "
+                    "בדוק אם יש גרסה חדשה של האפליקציה (עזרה → בדוק עדכונים).")
+            return
+
+        # שיחה רגילה: המודל שנבחר, ואחריו שרשרת הנפילה
+        chain = [self.model] + [m for m in MODEL_FALLBACK_CHAIN
+                                if m != self.model]
+        i = 0
+        while i < len(chain):
+            model = chain[i]
+            self._active_model = model
+            client, config = self._build_conversation_setup(model)
+            try:
+                await self._run_session(client, model, config)
+                return
+            except _ToolsUnsupported:
+                if self._tools_disabled:
+                    raise _FatalError("המודל דחה את הגדרות השיחה.")
+                # ניסיון חוזר עם אותו מודל, בלי כלים (חיפוש/שליטה במחשב)
+                self._tools_disabled = True
+                self.on_bot_text("[הכלים (חיפוש/שליטה במחשב) לא נתמכים במודל "
+                                 "הזה - ממשיך בלעדיהם] ")
+                continue
+            except _ModelUnavailable:
+                if i + 1 >= len(chain):
+                    raise _FatalError(
+                        "אף מודל שיחה אינו זמין כרגע - ייתכן ש-Google עדכנה "
+                        "אותם. בדוק אם יש גרסה חדשה של האפליקציה "
+                        "(עזרה → בדוק עדכונים).")
+                self.on_bot_text(f"[המודל {MODELS[model]} לא זמין כרגע - "
+                                 f"עובר ל-{MODELS[chain[i + 1]]}] ")
+                i += 1
 
     def _build_translate_setup(self):
         """מצב תרגום וידאו: מודל תרגום חי ייעודי (זורם, השהיה נמוכה)."""
@@ -413,11 +482,14 @@ class VoiceEngine:
         )
         return client, TRANSLATE_MODEL, config
 
-    def _build_conversation_setup(self):
+    def _build_conversation_setup(self, model: str = DEFAULT_MODEL):
         """מצב שיחה רגיל: קול, VAD, כלים, חשיבה, דיאלוג רגשי."""
-        # v1alpha נדרש רק לדיאלוג רגשי / אודיו פרואקטיבי
+        is_legacy = model.startswith("gemini-2.5")
+        is_extended = "extended-thinking" in model
+        # v1alpha נדרש לדיאלוג רגשי / אודיו פרואקטיבי רק בדור הקודם;
+        # ב-3.8 הם נתמכים ב-v1beta (ברירת המחדל).
         client_kwargs = {"api_key": self.api_key}
-        if self.affective_dialog or self.proactive_audio:
+        if is_legacy and (self.affective_dialog or self.proactive_audio):
             client_kwargs["http_options"] = {"api_version": "v1alpha"}
         client = genai.Client(**client_kwargs)
 
@@ -462,25 +534,42 @@ class VoiceEngine:
         if self.proactive_audio:
             config["proactivity"] = {"proactive_audio": True}
 
-        # כלים: חיפוש Google + שליטה במחשב
+        # כלים: חיפוש Google + שליטה במחשב (אלא אם המודל דחה אותם)
         tools = []
-        if self.web_search:
+        if self.web_search and not self._tools_disabled:
             tools.append({"google_search": {}})
-        if self.computer_control:
+        if self.computer_control and not self._tools_disabled:
             import computer_tools
             tools.append({"function_declarations":
                           computer_tools.FUNCTION_DECLARATIONS})
         if tools:
             config["tools"] = tools
 
-        # חשיבה - המודל 2.5 תומך ב-thinking_budget (לא thinking_level)
-        if self.deep_thinking:
+        # חשיבה - תלוי מודל:
+        #   2.5           - thinking_budget (מספר טוקנים)
+        #   3.8 extended  - thinking_level (low/medium/high; אין minimal)
+        #   3.8 בסיסי     - חשיבה מובנית, אסור לשלוח thinking_config
+        if self.deep_thinking and is_legacy:
             budget_map = {"minimal": 512, "low": 1024,
                           "medium": 2048, "high": 4096}
             config["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=budget_map.get(self.thinking_level, 2048))
+        elif is_extended:
+            level_map = {"minimal": "LOW", "low": "LOW",
+                         "medium": "MEDIUM", "high": "HIGH"}
+            config["thinking_config"] = types.ThinkingConfig(
+                thinking_level=level_map.get(self.thinking_level, "MEDIUM"))
 
-        return client, MODEL, config
+        # שיחה ארוכה בלי מגבלת זמן: דחיסת הקשר (חלון הזזה) + המשך סשן
+        # אחרי התחברות-מחדש (Google מנתקת כל ~15 דק'; עם handle ממשיכים
+        # את אותה שיחה ולא מתחילים מאפס).
+        config["context_window_compression"] = \
+            types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow())
+        config["session_resumption"] = types.SessionResumptionConfig(
+            handle=self._resume_handle)
+
+        return client, config
 
     async def _run_session(self, client, model, config):
         """מתחבר ל-Gemini, פותח זרמי אודיו, ומריץ את המשימות המקבילות."""
@@ -503,6 +592,11 @@ class VoiceEngine:
                     await asyncio.gather(*self._tasks)
                 except asyncio.CancelledError:
                     pass  # כיבוי יזום - תקין
+                finally:
+                    # משימה אחת נפלה - לא משאירים את האחרות תלויות
+                    for t in self._tasks:
+                        if not t.done():
+                            t.cancel()
         except asyncio.CancelledError:
             pass  # כיבוי יזום - יציאה נקייה
         except Exception as e:
@@ -518,14 +612,19 @@ class VoiceEngine:
             if ("API key" in err or "API_KEY_INVALID" in err
                     or "403" in err or "401" in err):
                 raise _FatalError("מפתח API לא תקין.")
-            # מודל לא זמין/הוסר ע"י Google (מודלי preview משתנים) - כשל חינני
+            # המודל דחה את הכלים (למשל חיפוש Google לא נתמך) - ננסה בלעדיהם
+            has_tools = isinstance(config, dict) and bool(config.get("tools"))
+            if has_tools and ("tool" in low or "google_search" in low
+                              or "function" in low) and \
+                    ("not supported" in low or "invalid" in low
+                     or "unsupported" in low or "400" in err):
+                raise _ToolsUnsupported(err)
+            # מודל לא זמין/הוסר ע"י Google (מודלי preview משתנים) - נופלים
+            # למודל הבא בשרשרת (או שגיאה ברורה אם זה האחרון)
             if ("not_found" in low or "not found" in low or "404" in err
                     or "does not exist" in low or "is not supported" in low
-                    or "was not found" in low):
-                mode = "התרגום" if self.capture_mode == "system" else "השיחה"
-                raise _FatalError(
-                    f"מודל {mode} אינו זמין כרגע - ייתכן ש-Google עדכנה אותו. "
-                    "בדוק אם יש גרסה חדשה של האפליקציה (עזרה → בדוק עדכונים).")
+                    or "was not found" in low or "not available" in low):
+                raise _ModelUnavailable(err)
             # שאר השגיאות (חיבור נפל) - נזרקות כדי שהעטיפה תתחבר מחדש
             raise
 
@@ -539,6 +638,10 @@ class VoiceEngine:
             # מצב תרגום וידאו - לוכדים את קול המערכת (loopback) במקום מיקרופון
             self._start_loopback_capture()
         else:
+            # ביטול הד - מסנן חדש לכל שיחה (דרך ההד תלויה במכשירים)
+            self._ref.reset()
+            self._gate = aec.EchoGate(barge_in_level=BARGE_IN_LEVEL)
+
             # --- מיקרופון: callback דוחף bytes לתור ---
             def mic_callback(indata, frames, time_info, status):
                 if self._running:
@@ -578,12 +681,20 @@ class VoiceEngine:
                 if leftover:
                     # מחזיר את העודף לתחילת התור
                     self._play_queue.queue.appendleft(leftover)
+            # אות הייחוס לביטול הד: בדיוק מה שיצא לרמקול (כולל שקט)
+            if self.capture_mode != "system":
+                try:
+                    self._ref.push(bytes(buf[:need]))
+                except Exception:
+                    pass   # ביטול הד לא אמור להפיל את ההשמעה
 
+        # בלוק הרמקול = 100ms (2400 @ 24kHz) - מתחלק בדיוק ל-1600 @ 16kHz,
+        # כך שאות הייחוס נשאר מיושר לבלוקי המיקרופון בלי סחיפה.
         self._out_stream = sd.RawOutputStream(
             samplerate=RECV_RATE,
             channels=CHANNELS,
             dtype=FORMAT,
-            blocksize=BLOCK,
+            blocksize=BLOCK * RECV_RATE // SEND_RATE,
             device=self.output_device,   # None = ברירת מחדל מערכת
             callback=speaker_callback,
         )
@@ -835,6 +946,12 @@ class VoiceEngine:
             except queue.Empty:
                 continue
 
+            # אות הייחוס לביטול הד - מושכים *בכל* בלוק (גם בהשתקה),
+            # אחרת הייחוס והמיקרופון יוצאים מיישור.
+            ref = None
+            if self.capture_mode != "system":
+                ref = self._ref.pull(len(data) // 2)
+
             # אם מושתק - מרוקנים את התור אך לא שולחים ל-Gemini
             if self.mic_muted:
                 self.on_level(0.0)
@@ -872,21 +989,17 @@ class VoiceEngine:
                     break
                 continue
 
-            # דיכוי הד חכם - בזמן ש-Gemini מדבר חוסמים את ההד החלש,
-            # אבל מאפשרים לקול חזק לעבור (התפרצות / barge-in).
-            # כשמזוהה קול רם, נפתח חלון קצר שבו המיקרופון עובר,
-            # כך ש-Gemini "שומע" את ההפרעה ומפסיק לדבר.
-            if self.echo_suppression and \
-                    (time.monotonic() - self._last_output_time) < 0.2:
-                lvl = self._rms_level(data)
-                if lvl >= BARGE_IN_LEVEL:
-                    # קול רם = ניסיון התפרצות, פותחים חלון
-                    self._barge_in_until = time.monotonic() + 1.2
-                if time.monotonic() >= self._barge_in_until:
-                    # אין התפרצות פעילה - חוסמים את ההד
+            # ביטול הד (aec.py): מורידים מהמיקרופון את מה שהרמקול השמיע.
+            # אם אחרי ההורדה נשאר רק "שארית הד" - לא שולחים כלום (Gemini לא
+            # ישמע את עצמו). אם נשאר קול אמיתי - זה המשתמש שמתפרץ: שולחים
+            # את האות המנוקה, ו-Gemini עוצר.
+            if self.echo_suppression and self._gate is not None and ref is not None:
+                mic_f = aec.pcm16_to_float(data)
+                send, cleaned, lvl = self._gate.decide(mic_f, ref)
+                if not send:
                     self.on_level(0.0)
                     continue
-                # אחרת - נותנים לקול לעבור (המשך ההתפרצות)
+                data = aec.float_to_pcm16(cleaned)
 
             # עוצמת קול המשתמש - לאנימציה
             self.on_level(self._rms_level(data))
@@ -935,6 +1048,17 @@ class VoiceEngine:
                 if getattr(response, "tool_call", None):
                     await self._handle_tool_call(session, response.tool_call)
                     continue
+
+                # המשך סשן: שומרים את ה-handle העדכני להתחברות-מחדש
+                upd = getattr(response, "session_resumption_update", None)
+                if upd is not None and getattr(upd, "resumable", False) \
+                        and getattr(upd, "new_handle", None):
+                    self._resume_handle = upd.new_handle
+
+                # השרת מודיע שינתק בקרוב - מתנתקים יזום ומתחברים מחדש
+                # עם ה-handle (השיחה ממשיכה מאותה נקודה)
+                if getattr(response, "go_away", None):
+                    raise ConnectionResetError("go_away")
 
                 # אודיו - לתור ההשמעה
                 if response.data is not None:
