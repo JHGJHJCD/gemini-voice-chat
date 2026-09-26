@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>שיחה קולית עם Gemini</title>
+<meta name="description" content="שיחה קולית רציפה בעברית עם Gemini, ישירות מהדפדפן" />
+<meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- פס סטטוס עליון -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="dot" id="connDot"></span>
+    <span id="statusText">מוכן</span>
+  </div>
+  <div class="topbar-center" id="modelBadge">Gemini 3.8 Live</div>
+  <div class="topbar-right">
+    <button class="icon-btn" id="btnColorMode" title="בהיר / כהה" aria-label="החלפת מצב תצוגה">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-5.4-5.4c0-1.81.91-3.4 2.26-4.4-.44-.06-.9-.1-1.36-.1Z"/></svg>
+    </button>
+    <button class="icon-btn" id="btnSettings" title="הגדרות" aria-label="פתיחת הגדרות">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94a7.14 7.14 0 0 0 .06-.94 7.14 7.14 0 0 0-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.14.56-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.62-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.42.32.6.22l2.39-.96c.48.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .45-.18.5-.42l.36-2.54c.59-.24 1.14-.55 1.62-.94l2.39.96c.24.1.48 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="stage">
+  <!-- הכדור הקולי -->
+  <div class="orb-wrap" id="orbWrap">
+    <canvas id="orbCanvas" width="360" height="360" aria-hidden="true"></canvas>
+    <div class="orb-caption" id="orbCaption">לחצו התחל כדי לדבר</div>
+  </div>
+
+  <!-- תמלול כבועות -->
+  <section class="transcript" id="transcript" aria-live="polite"></section>
+</main>
+
+<!-- סרגל פעולות תחתון -->
+<footer class="dock">
+  <div class="dock-row secondary">
+    <button class="round-btn" id="btnMute" title="השתקת מיקרופון" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+    </button>
+    <button class="round-btn" id="btnScreen" title="שיתוף מסך" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4l-1 2v1h10v-1l-1-2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm0 12H4V5h16v10Z"/></svg>
+    </button>
+    <button class="round-btn" id="btnCamera" title="מצלמה" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9.4 4 7.8 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-3.8L14.6 4H9.4ZM12 9a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"/></svg>
+    </button>
+    <button class="round-btn" id="btnTranslate" title="תרגום וידאו סימולטני" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12.87 15.07-2.54-2.51.92-.92 1.68 1.69c.71-1.19 1.28-2.42 1.53-3.42H2V8h4V6h2v2h4v1.75H8.61l-.09.24c-.28.78-.85 1.84-1.74 2.94l1.92 1.9-.63.63ZM18 9.5l3.5 8.5h-1.7l-.7-1.8h-2.6l-.7 1.8h-1.7l3.4-8.5h1Zm-.9 2.1-.9 2.4h1.8l-.9-2.4Z"/></svg>
+    </button>
+  </div>
+
+  <button class="talk-btn" id="btnTalk" aria-pressed="false">
+    <span class="talk-btn-ring"></span>
+    <svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+    <span class="talk-btn-label">התחל שיחה</span>
+  </button>
+
+  <div class="dock-row secondary">
+    <button class="round-btn" id="btnClearChat" title="נקה תמלול">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3v1H4v2h1v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6h1V4h-5V3H9Zm2 6h2v9h-2V9ZM7 9h2v9H7V9Zm8 0h2v9h-2V9Z"/></svg>
+    </button>
+  </div>
+</footer>
+
+<!-- Toast שגיאות -->
+<div class="toast-container" id="toastContainer" aria-live="assertive"></div>
+
+<!-- ================= דיאלוג הגדרות ================= -->
+<dialog id="settingsDialog" class="app-dialog">
+  <form method="dialog" class="dialog-shell">
+    <div class="dialog-head">
+      <h2>הגדרות</h2>
+      <button type="submit" class="icon-btn" aria-label="סגירה">✕</button>
+    </div>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="general" role="tab">כללי</button>
+      <button type="button" class="tab" data-tab="voice" role="tab">אישיות וקול</button>
+      <button type="button" class="tab" data-tab="speech" role="tab">זיהוי דיבור</button>
+      <button type="button" class="tab" data-tab="features" role="tab">יכולות</button>
+      <button type="button" class="tab" data-tab="memory" role="tab">זיכרון וידע</button>
+      <button type="button" class="tab" data-tab="appearance" role="tab">מראה</button>
+    </div>
+
+    <div class="tab-panel active" data-panel="general">
+      <label class="field">
+        <span>מפתח API</span>
+        <div class="row">
+          <input type="password" id="apiKeyInput" placeholder="הדביקו כאן את מפתח ה-API" autocomplete="off" />
+          <button type="button" class="btn-small" id="btnToggleKey">הצג</button>
+        </div>
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="hint-link">קבלת מפתח מ-Google AI Studio ↗</a>
+      </label>
+      <label class="field">
+        <span>מודל שיחה</span>
+        <select id="modelSelect"></select>
+      </label>
+    </div>
+
+    <div class="tab-panel" data-panel="voice">
+      <label class="field">
+        <span>קול</span>
+        <select id="voiceSelect"></select>
+        <span class="field-desc" id="voiceDesc"></span>
+      </label>
+      <label class="field">
+        <span>אישיות</span>
+        <select id="personaSelect"></select>
+      </label>
+      <label class="field">
+        <span>הנחיית מערכת</span>
+        <textarea id="instructionText" rows="5"></textarea>
+      </label>
+    </div>
+
+    <div class="tab-panel" data-panel="speech">
+      <label class="field">
+        <span>רגישות זיהוי תחילת דיבור</span>
+        <select id="startSensitivity">
+          <option value="LOW">נמוכה</option>
+          <option value="MEDIUM" selected>בינונית (ברירת מחדל)</option>
+          <option value="HIGH">גבוהה</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>רגישות זיהוי סוף דיבור</span>
+        <select id="endSensitivity">
+          <option value="LOW">נמוכה</option>
+          <option value="MEDIUM" selected>בינונית (ברירת מחדל)</option>
+          <option value="HIGH">גבוהה</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>משך שקט לזיהוי סוף דיבור: <b id="silenceVal">800</b> מילישניות</span>
+        <input type="range" id="silenceRange" min="200" max="2000" step="100" />
+      </label>
+      <label class="field row-check">
+        <input type="checkbox" id="echoSuppression" />
+        <span>ביטול הד ורעש (מומלץ)</span>
+      </label>
+    </div>
+
+    <div class="tab-panel" data-panel="features">
+      <label class="field row-check">
+        <input type="checkbox" id="webSearch" />
+        <span>חיפוש בגוגל</span>
+      </label>
+      <label class="field row-check">
+        <input type="checkbox" id="computerControl" />
+        <span>כלים (פתיחת אתר, תאריך ושעה, פתקים)</span>
+      </label>
+      <label class="field row-check">
+        <input type="checkbox" id="deepThinking" />
+        <span>חשיבה מעמיקה</span>
+      </label>
+      <label class="field">
+        <span>רמת חשיבה</span>
+        <select id="thinkingLevel">
+          <option value="minimal">מינימלית</option>
+          <option value="low">נמוכה</option>
+          <option value="medium">בינונית</option>
+          <option value="high">גבוהה</option>
+        </select>
+      </label>
+      <label class="field row-check">
+        <input type="checkbox" id="affectiveDialog" />
+        <span>דיאלוג רגשי — מותאם לטון הדיבור שלכם</span>
+      </label>
+      <label class="field row-check">
+        <input type="checkbox" id="proactiveAudio" />
+        <span>אודיו פרואקטיבי — לא עונה כשלא רלוונטי</span>
+      </label>
+    </div>
+
+    <div class="tab-panel" data-panel="memory">
+      <label class="field row-check">
+        <input type="checkbox" id="memoryEnabled" />
+        <span>זיכרון בין שיחות</span>
+      </label>
+      <button type="button" class="btn-small" id="btnClearMemory">נקה זיכרון שיחות</button>
+
+      <div class="field">
+        <span>בסיס ידע (מסמכי טקסט / PDF)</span>
+        <div class="row">
+          <input type="file" id="kbFile" accept=".txt,.pdf" />
+        </div>
+        <ul class="kb-list" id="kbList"></ul>
+      </div>
+    </div>
+
+    <div class="tab-panel" data-panel="appearance">
+      <label class="field">
+        <span>ערכת צבע</span>
+        <div class="theme-swatches" id="themeSwatches"></div>
+      </label>
+      <label class="field">
+        <span>מצב תצוגה</span>
+        <select id="colorModeSelect">
+          <option value="dark">כהה</option>
+          <option value="light">בהיר</option>
+          <option value="system">לפי המערכת</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="dialog-foot">
+      <button type="submit" class="btn-primary" id="btnSaveSettings">שמירה וסגירה</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================= אשף ראשוני ================= -->
+<dialog id="wizardDialog" class="app-dialog wizard">
+  <div class="dialog-shell">
+    <div class="wizard-steps" id="wizardSteps">
+      <span class="step-dot active"></span>
+      <span class="step-dot"></span>
+      <span class="step-dot"></span>
+    </div>
+
+    <div class="wizard-page active" data-step="1">
+      <h2>ברוכים הבאים 👋</h2>
+      <p>שיחה קולית עם Gemini, ישירות מהדפדפן — בלי התקנה.</p>
+      <label class="field">
+        <span>מפתח API של Gemini</span>
+        <input type="password" id="wizardApiKey" placeholder="הדביקו כאן את מפתח ה-API" autocomplete="off" />
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="hint-link">אין לכם מפתח? קבלו אחד בחינם מ-Google AI Studio ↗</a>
+      </label>
+    </div>
+
+    <div class="wizard-page" data-step="2">
+      <h2>קול ואישיות</h2>
+      <label class="field">
+        <span>בחרו קול</span>
+        <select id="wizardVoice"></select>
+      </label>
+      <label class="field">
+        <span>בחרו אישיות</span>
+        <select id="wizardPersona"></select>
+      </label>
+    </div>
+
+    <div class="wizard-page" data-step="3">
+      <h2>הרשאת מיקרופון</h2>
+      <p>כשתלחצו "התחלה" הדפדפן יבקש גישה למיקרופון — זה הכרחי לשיחה קולית. שום דבר לא נשלח עד שתלחצו "התחל שיחה".</p>
+      <p class="hint">אפשר לשנות הכל בכל רגע דרך כפתור ההגדרות ⚙️.</p>
+    </div>
+
+    <div class="wizard-nav">
+      <button type="button" class="btn-small" id="wizardBack">חזרה</button>
+      <button type="button" class="btn-primary" id="wizardNext">הבא</button>
+      <button type="button" class="btn-primary" id="wizardFinish" hidden>התחלה</button>
+    </div>
+  </div>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
