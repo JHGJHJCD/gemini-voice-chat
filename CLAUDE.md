@@ -29,3 +29,8 @@
 - קידוד: כל הקבצים UTF-8; `.bat` CRLF; הודעות למשתמש בעברית.
 - גרסה: `config.APP_VERSION` + `installer.iss AppVersion` + תג release — שלושתם יחד.
 - לא להוסיף Co-Authored-By להודעות commit.
+
+## גרסת דפדפן (PWA) — `web/` (26/9/2026)
+הגירה מ-PyQt לאפליקציית web טהורה (ללא שרת/build): `web/PLAN.md` = התוכנית והפרוטוקול; `web/implementation-notes.md` = סטיות.
+הרצה מקומית: `הפעל_גרסת_דפדפן.bat` (http.server על 8765). פריסה: ענף `gh-pages` (`git subtree push --prefix web origin gh-pages`).
+קוד הפייתון נשאר עד שהגרסה הדפדפנית מאומתת חי. מודל חדש = לעדכן גם `web/live.js` MODELS.
