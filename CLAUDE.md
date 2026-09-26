@@ -1,4 +1,4 @@
-# שיחה קולית עם Gemini (gemini-voice-chat)
+﻿# שיחה קולית עם Gemini (gemini-voice-chat)
 
 אפליקציית Windows (PyQt6) לשיחה קולית רציפה בעברית עם Gemini Live + תרגום וידאו סימולטני.
 מופצת כ-one-folder exe + מתקין Inno Setup דרך GitHub Releases (`JHGJHJCD/gemini-voice-chat`).
@@ -32,5 +32,5 @@
 
 ## גרסת דפדפן (PWA) — `web/` (26/9/2026)
 הגירה מ-PyQt לאפליקציית web טהורה (ללא שרת/build): `web/PLAN.md` = התוכנית והפרוטוקול; `web/implementation-notes.md` = סטיות.
-הרצה מקומית: `הפעל_גרסת_דפדפן.bat` (http.server על 8765). פריסה: ענף `gh-pages` (`git subtree push --prefix web origin gh-pages`).
+הרצה: קיצור בשולחן העבודה "שיחה קולית עם Gemini (דפדפן)" → `web_launcher.pyw` (pythonw: שרת על localhost:8765 + Chrome במצב --app עם פרופיל `.browser_profile/`). **לא אתר, לא Pages** (הכרעת יהודה 26/9).
 קוד הפייתון נשאר עד שהגרסה הדפדפנית מאומתת חי. מודל חדש = לעדכן גם `web/live.js` MODELS.

@@ -38,3 +38,5 @@ installer_output/
 Thumbs.db
 *.log
 log.txt
+
+.browser_profile/
